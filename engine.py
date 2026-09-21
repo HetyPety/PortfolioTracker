@@ -1,0 +1,543 @@
+import os
+import re
+from datetime import datetime
+import gspread
+import pandas as pd
+import yfinance as yf
+import urllib3
+import streamlit as st
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+SUPPORTED_CURRENCIES = {
+    "HUF", "EUR", "USD", "GBP", "CHF", "DKK", "NOK", "SEK",
+    "PLN", "CZK", "RON", "CAD", "AUD", "JPY", "SGD", "GBPX",
+    "GBX", "GBp",
+}
+
+def get_gspread_client(json_credentials_path: str = "credentials.json"):
+    """
+    Connects via Streamlit Secrets when running online,
+    or credentials.json when running locally on desktop.
+    """
+    if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
+        return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
+    
+    if os.path.exists(json_credentials_path):
+        return gspread.service_account(filename=json_credentials_path)
+        
+    raise FileNotFoundError("Google credentials not found in Streamlit Secrets or credentials.json!")
+
+
+def load_and_sync_portfolio(
+    sheet_name_or_url: str,
+    json_credentials_path: str = "credentials.json",
+    force_resync: bool = True,
+):
+    gc = get_gspread_client(json_credentials_path)
+    sh = (
+        gc.open_by_url(sheet_name_or_url)
+        if sheet_name_or_url.startswith("http")
+        else gc.open(sheet_name_or_url)
+    )
+
+
+def clean_float(val, default: float = 0.0) -> float:
+    """Robust numeric parser handling formatted strings."""
+    if val is None or pd.isna(val):
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
+
+    s = str(val).strip().replace("\xa0", "").replace(" ", "")
+    if not s or s.lower() in ["nan", "none", "null", ""]:
+        return default
+
+    s = re.sub(r"[^\d.,\-+]", "", s)
+    if not s:
+        return default
+
+    if "," in s and "." in s:
+        if s.rfind(",") < s.rfind("."):
+            s = s.replace(",", "")
+        else:
+            s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        parts = s.split(",")
+        if len(parts) == 2 and len(parts[1]) in [1, 2]:
+            s = s.replace(",", ".")
+        else:
+            s = s.replace(",", "")
+
+    try:
+        return float(s)
+    except ValueError:
+        return default
+
+
+def parse_date_string(date_val) -> datetime:
+    """Robust date parser handling standard and Hungarian formats."""
+    if isinstance(date_val, (datetime, pd.Timestamp)):
+        return datetime(date_val.year, date_val.month, date_val.day)
+
+    s = str(date_val).strip()
+    if " " in s and not re.search(r"\d{4}\.\s+\d{2}", s):
+        s = s.split(" ")[0].strip()
+
+    s = re.sub(r"[\.\/\s]+", "-", s).strip("-")
+    parts = s.split("-")
+    if len(parts) == 3:
+        try:
+            p1, p2, p3 = int(parts[0]), int(parts[1]), int(parts[2])
+            if p1 > 1000:
+                return datetime(p1, p2, p3)
+            elif p3 > 1000:
+                return datetime(p3, p2, p1)
+        except ValueError:
+            pass
+
+    return pd.to_datetime(date_val, dayfirst=True).to_pydatetime()
+
+
+def validate_and_parse_currency(currency_str: str) -> tuple[str, bool]:
+    """Validates currency codes against supported currencies."""
+    raw_curr = (
+        str(currency_str)
+        .replace("\xa0", "")
+        .replace("\t", "")
+        .replace("\n", "")
+        .strip()
+        .upper()
+    )
+    if not raw_curr:
+        return "USD", False
+
+    if raw_curr == "HUF":
+        return "HUF", False
+    elif raw_curr in ["GBPX", "GBX"] or raw_curr == "GBP":
+        return "GBP", True
+    elif raw_curr in SUPPORTED_CURRENCIES:
+        return raw_curr, False
+    else:
+        return raw_curr, False
+
+
+def find_col_name(df_columns, possible_names, fallback_idx: int = -1) -> str:
+    col_map = {str(c).strip().lower(): str(c) for c in df_columns}
+    for name in possible_names:
+        clean_name = str(name).strip().lower()
+        if clean_name in col_map:
+            return col_map[clean_name]
+    if 0 <= fallback_idx < len(df_columns):
+        return str(df_columns[fallback_idx])
+    return ""
+
+
+def calculate_xirr(cash_flows: list[float], dates: list[datetime], estimate: float = 0.1) -> float:
+    """Pure Python Newton-Raphson XIRR calculation engine."""
+    if not cash_flows or len(cash_flows) < 2 or sum(1 for c in cash_flows if c < 0) == 0:
+        return 0.0
+
+    d0 = min(dates)
+
+    def npv(rate):
+        if rate <= -0.9999:
+            return float('inf')
+        return sum([cf / ((1.0 + rate) ** ((d - d0).days / 365.0)) for cf, d in zip(cash_flows, dates)])
+
+    def npv_derivative(rate):
+        if rate <= -0.9999:
+            return float('inf')
+        return sum([-( (d - d0).days / 365.0 ) * cf / ((1.0 + rate) ** (((d - d0).days / 365.0) + 1.0)) for cf, d in zip(cash_flows, dates)])
+
+    r = estimate
+    for _ in range(100):
+        f_val = npv(r)
+        if abs(f_val) < 1e-3:
+            return r * 100.0
+        f_prime = npv_derivative(r)
+        if f_prime == 0:
+            break
+        r_next = r - f_val / f_prime
+        if abs(r_next - r) < 1e-5:
+            return r_next * 100.0
+        r = r_next
+
+    return 0.0
+
+
+def get_live_fx_rate_to_huf(currency_code: str, is_pence: bool, eur_huf_rate: float) -> float:
+    """Safely fetches live exchange rate from currency_code to HUF."""
+    if currency_code == "HUF":
+        return 1.0
+    if currency_code == "EUR":
+        return eur_huf_rate / 100.0 if is_pence else eur_huf_rate
+
+    try:
+        pair = f"{currency_code}HUF=X"
+        t = yf.Ticker(pair)
+        rate = float(t.fast_info.get("lastPrice") or 0.0)
+        if rate > 0:
+            return rate / 100.0 if is_pence else rate
+    except Exception:
+        pass
+
+    try:
+        usd_huf = float(yf.Ticker("USDHUF=X").fast_info.get("lastPrice") or 0.0)
+        usd_curr = float(yf.Ticker(f"USD{currency_code}=X").fast_info.get("lastPrice") or 0.0)
+        if usd_huf > 0 and usd_curr > 0:
+            rate = usd_huf / usd_curr
+            return rate / 100.0 if is_pence else rate
+    except Exception:
+        pass
+
+    try:
+        eur_curr = float(yf.Ticker(f"EUR{currency_code}=X").fast_info.get("lastPrice") or 0.0)
+        if eur_huf_rate > 0 and eur_curr > 0:
+            rate = eur_huf_rate / eur_curr
+            return rate / 100.0 if is_pence else rate
+    except Exception:
+        pass
+
+    return 1.0
+
+
+def load_and_sync_portfolio(
+    sheet_name_or_url: str,
+    json_credentials_path: str = "credentials.json",
+    force_resync: bool = True,
+):
+    if not os.path.exists(json_credentials_path):
+        raise FileNotFoundError(
+            f"Credentials file '{json_credentials_path}' not found in folder!"
+        )
+
+    gc = gspread.service_account(filename=json_credentials_path)
+    sh = (
+        gc.open_by_url(sheet_name_or_url)
+        if sheet_name_or_url.startswith("http")
+        else gc.open(sheet_name_or_url)
+    )
+
+    # 1. Load Ticker Mapping Tab
+    ticker_map = {}
+    try:
+        ws_map = sh.worksheet("Ticker_Mapping")
+        map_rows = ws_map.get_all_records()
+        for r in map_rows:
+            ibkr_sym = str(r.get("IBKR_Symbol", "") or r.get("Symbol", "")).strip().upper()
+            yf_sym = str(r.get("YFinance_Ticker", "") or r.get("YFinance", "") or r.get("Ticker", "")).strip()
+            if ibkr_sym and yf_sym:
+                ticker_map[ibkr_sym] = yf_sym
+    except Exception:
+        pass
+
+    # 2. Load Transactions Tab
+    ws_tx = sh.worksheet("Transactions")
+    all_tx_rows = ws_tx.get_all_values()
+
+    df_tx = pd.DataFrame()
+    if len(all_tx_rows) > 1:
+        raw_headers = [str(h).strip() for h in all_tx_rows[0]]
+        df_tx = pd.DataFrame(all_tx_rows[1:], columns=raw_headers).astype(object)
+
+        broker_col = find_col_name(df_tx.columns, ["Broker", "Bróker", "Bank"])
+        net_amt_col = find_col_name(df_tx.columns, ["Net Amount"])
+        huf_amt_col = find_col_name(df_tx.columns, ["Amount HUF", "Net Amount HUF", "Net HUF", "Ertek HUF"])
+
+        processed_huf_amounts = []
+        processed_brokers = []
+
+        for idx, row in df_tx.iterrows():
+            net_amt = clean_float(row.get(net_amt_col, 0)) if net_amt_col else 0.0
+            
+            if huf_amt_col and str(row.get(huf_amt_col, "")).strip() != "":
+                huf_val = clean_float(row.get(huf_amt_col, net_amt))
+            else:
+                huf_val = net_amt
+
+            processed_huf_amounts.append(round(huf_val, 2))
+
+            broker_val = str(row.get(broker_col, "")).strip() if broker_col else ""
+            if not broker_val:
+                broker_val = "IBKR"  # Default fallback if blank
+            processed_brokers.append(broker_val)
+
+        df_tx["_Net_Amount_HUF"] = processed_huf_amounts
+        df_tx["Broker"] = processed_brokers
+
+    return df_tx, ticker_map
+
+
+def calculate_weighted_positions(df_tx, ticker_map):
+    if df_tx.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df_sorted = df_tx.copy()
+
+    date_col = find_col_name(df_sorted.columns, ["Date", "Tx Date", "Datum"])
+    broker_col = find_col_name(df_sorted.columns, ["Broker", "Bróker"])
+    account_col = find_col_name(df_sorted.columns, ["Account"])
+    type_col = find_col_name(df_sorted.columns, ["Transaction Type", "Type", "Buy/Sell", "Tipus"])
+    ticker_col = find_col_name(df_sorted.columns, ["Symbol", "Ticker"])
+    qty_col = find_col_name(df_sorted.columns, ["Quantity", "Shares", "Number", "Qty"])
+    curr_col = find_col_name(df_sorted.columns, ["Price Currency", "Currency", "Curr"])
+
+    positions = {}
+    realized_trades = []
+
+    for _, row in df_sorted.iterrows():
+        tx_type = str(row.get(type_col, "")).strip().title()
+        if tx_type not in ["Buy", "Sell"]:
+            continue
+
+        broker = str(row.get(broker_col, "IBKR")).strip() or "IBKR"
+        account = str(row.get(account_col, "")).strip()
+        raw_ticker = str(row.get(ticker_col, "")).strip().upper()
+        ticker = ticker_map.get(raw_ticker, raw_ticker)
+        currency = str(row.get(curr_col, "EUR")).strip()
+
+        qty = abs(clean_float(row.get(qty_col, 0)))
+        net_huf = clean_float(row.get("_Net_Amount_HUF", 0))
+        abs_cost_huf = abs(net_huf)
+
+        key = (broker, account, ticker)
+        if key not in positions:
+            positions[key] = {
+                "Broker": broker,
+                "Account": account,
+                "Ticker": ticker,
+                "Shares": 0.0,
+                "Total_Cost_HUF": 0.0,
+                "Currency": currency,
+            }
+
+        pos = positions[key]
+
+        if tx_type == "Buy":
+            pos["Shares"] += qty
+            pos["Total_Cost_HUF"] += abs_cost_huf
+        elif tx_type == "Sell" and pos["Shares"] > 0:
+            current_wac_huf = pos["Total_Cost_HUF"] / pos["Shares"]
+            cost_of_sold_shares_huf = qty * current_wac_huf
+            realized_pnl_huf = abs_cost_huf - cost_of_sold_shares_huf
+
+            realized_trades.append({
+                "Date": str(row.get(date_col, "N/A")),
+                "Broker": broker,
+                "Account": account,
+                "Ticker": ticker,
+                "Sold Shares": qty,
+                "Proceeds HUF": abs_cost_huf,
+                "Cost Basis HUF": cost_of_sold_shares_huf,
+                "Realized PnL HUF": realized_pnl_huf,
+            })
+
+            pos["Shares"] -= qty
+            pos["Total_Cost_HUF"] -= cost_of_sold_shares_huf
+            if pos["Shares"] <= 1e-6:
+                pos["Shares"] = 0.0
+                pos["Total_Cost_HUF"] = 0.0
+
+    active_list = [
+        {
+            "Broker": pos["Broker"],
+            "Account": pos["Account"],
+            "Ticker": pos["Ticker"],
+            "Shares": pos["Shares"],
+            "WAC HUF": pos["Total_Cost_HUF"] / pos["Shares"] if pos["Shares"] > 0 else 0.0,
+            "Total Cost HUF": pos["Total_Cost_HUF"],
+            "Currency": pos["Currency"],
+        }
+        for pos in positions.values()
+        if pos["Shares"] > 0
+    ]
+
+    return pd.DataFrame(active_list), pd.DataFrame(realized_trades)
+
+
+def enrich_with_live_prices(active_df):
+    if active_df.empty:
+        return active_df, 400.0
+
+    tickers = active_df["Ticker"].unique().tolist()
+    tickers_str = " ".join(tickers)
+    batch_data = yf.download(
+        tickers_str, period="5d", interval="1d", group_by="ticker", progress=False
+    )
+
+    eur_huf_rate = 400.0
+    try:
+        live_eur = yf.Ticker("EURHUF=X").fast_info.get("lastPrice")
+        if live_eur and float(live_eur) > 0:
+            eur_huf_rate = float(live_eur)
+    except Exception:
+        pass
+
+    fx_cache = {}
+    enriched = []
+
+    for _, row in active_df.iterrows():
+        ticker = row["Ticker"]
+        shares = row["Shares"]
+        total_cost_huf = row["Total Cost HUF"]
+        curr = str(row["Currency"]).strip()
+
+        currency_code, is_pence = validate_and_parse_currency(curr)
+
+        live_price = 0.0
+        try:
+            if len(tickers) == 1:
+                t_df = batch_data.dropna(subset=["Close"])
+            else:
+                t_df = batch_data[ticker].dropna(subset=["Close"])
+            if not t_df.empty:
+                live_price = float(t_df["Close"].iloc[-1])
+        except Exception:
+            pass
+
+        div_yield = 0.0
+        next_earnings = "N/A"
+        try:
+            t = yf.Ticker(ticker)
+            if live_price == 0.0:
+                live_price = float(
+                    t.info.get("currentPrice") or t.info.get("regularMarketPrice") or 0
+                )
+            div_yield = float(t.info.get("dividendYield") or 0.0) * 100.0
+            cal = t.calendar
+            if cal is not None and "Earnings Date" in cal:
+                next_earnings = str(cal["Earnings Date"][0])[:10]
+        except Exception:
+            pass
+
+        cache_key = (currency_code, is_pence)
+        if cache_key not in fx_cache:
+            fx_cache[cache_key] = get_live_fx_rate_to_huf(currency_code, is_pence, eur_huf_rate)
+        
+        rate_to_huf = fx_cache[cache_key]
+
+        mkt_val_huf = shares * live_price * rate_to_huf
+        pnl_huf = mkt_val_huf - total_cost_huf
+        pnl_pct = (pnl_huf / total_cost_huf * 100.0) if total_cost_huf > 0 else 0.0
+
+        enriched.append({
+            "Broker": row["Broker"],
+            "Account": row["Account"],
+            "Ticker": ticker,
+            "Shares": shares,
+            "WAC HUF": row["WAC HUF"],
+            "Live Price": live_price,
+            "Currency": curr,
+            "Cost HUF": total_cost_huf,
+            "Market Value HUF": mkt_val_huf,
+            "PnL HUF": pnl_huf,
+            "PnL %": pnl_pct,
+            "Market Value EUR": mkt_val_huf / eur_huf_rate,
+            "PnL EUR": pnl_huf / eur_huf_rate,
+            "Div Yield %": div_yield,
+            "Next Earnings": next_earnings,
+        })
+
+    return pd.DataFrame(enriched), eur_huf_rate
+
+
+def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", selected_account="All Accounts"):
+    tx_filt = df_tx.copy() if not df_tx.empty else pd.DataFrame()
+    hold_filt = enriched_df.copy() if not enriched_df.empty else pd.DataFrame()
+
+    if selected_broker != "All Brokers" and not tx_filt.empty:
+        tx_filt = tx_filt[tx_filt["Broker"].astype(str).str.strip() == selected_broker]
+        if not hold_filt.empty:
+            hold_filt = hold_filt[hold_filt["Broker"].astype(str).str.strip() == selected_broker]
+
+    if selected_account != "All Accounts" and not tx_filt.empty:
+        account_col = find_col_name(tx_filt.columns, ["Account"])
+        if account_col:
+            tx_filt = tx_filt[tx_filt[account_col].astype(str).str.strip() == selected_account]
+        if not hold_filt.empty:
+            hold_filt = hold_filt[hold_filt["Account"].astype(str).str.strip() == selected_account]
+
+    total_deposits_huf = 0.0
+    cash_balance_huf = 0.0
+    xirr_cash_flows = []
+    xirr_dates = []
+
+    date_col = find_col_name(tx_filt.columns, ["Date", "Tx Date", "Datum"]) if not tx_filt.empty else None
+    type_col = find_col_name(tx_filt.columns, ["Transaction Type", "Type", "Buy/Sell", "Tipus"]) if not tx_filt.empty else None
+
+    if not tx_filt.empty and "_Net_Amount_HUF" in tx_filt.columns:
+        for _, r in tx_filt.iterrows():
+            net_huf = clean_float(r.get("_Net_Amount_HUF", 0))
+            cash_balance_huf += net_huf
+
+            if type_col:
+                t_type = str(r.get(type_col, "")).strip().title()
+                tx_dt = parse_date_string(r.get(date_col, datetime.now())) if date_col else datetime.now()
+
+                if t_type == "Deposit":
+                    total_deposits_huf += net_huf
+                    xirr_cash_flows.append(-abs(net_huf))
+                    xirr_dates.append(tx_dt)
+                elif t_type == "Withdrawal":
+                    total_deposits_huf -= abs(net_huf)
+                    xirr_cash_flows.append(abs(net_huf))
+                    xirr_dates.append(tx_dt)
+
+    invested_mkt_val_huf = 0.0
+    if not hold_filt.empty and "Market Value HUF" in hold_filt.columns:
+        invested_mkt_val_huf = float(hold_filt["Market Value HUF"].apply(clean_float).sum())
+
+    total_nav_huf = cash_balance_huf + invested_mkt_val_huf
+    total_net_gain_huf = total_nav_huf - total_deposits_huf if total_deposits_huf > 0 else total_nav_huf
+    net_return_pct = (
+        (total_net_gain_huf / total_deposits_huf * 100.0)
+        if total_deposits_huf > 0
+        else 0.0
+    )
+
+    if total_nav_huf > 0 and len(xirr_cash_flows) > 0:
+        xirr_cash_flows.append(total_nav_huf)
+        xirr_dates.append(datetime.now())
+
+    annualized_xirr = calculate_xirr(xirr_cash_flows, xirr_dates)
+
+    return {
+        "Deposits HUF": total_deposits_huf,
+        "Cash Balance HUF": cash_balance_huf,
+        "Invested HUF": invested_mkt_val_huf,
+        "Total NAV HUF": total_nav_huf,
+        "Net Gain HUF": total_net_gain_huf,
+        "Net Return %": net_return_pct,
+        "Annualized XIRR %": annualized_xirr,
+    }
+
+
+def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
+    """Generates a structured summary DataFrame grouped by Broker and Account."""
+    if df_tx.empty:
+        return pd.DataFrame()
+
+    account_col = find_col_name(df_tx.columns, ["Account"])
+    
+    # Identify unique Broker / Account combinations
+    tx_pairs = set(zip(df_tx["Broker"].astype(str).str.strip(), df_tx[account_col].astype(str).str.strip())) if account_col else set()
+    hold_pairs = set(zip(enriched_df["Broker"].astype(str).str.strip(), enriched_df["Account"].astype(str).str.strip())) if not enriched_df.empty else set()
+    all_pairs = sorted(list(tx_pairs.union(hold_pairs)))
+
+    summary_rows = []
+    for broker, account in all_pairs:
+        stats = calculate_cash_and_nav(df_tx, enriched_df, selected_broker=broker, selected_account=account)
+        summary_rows.append({
+            "Broker": broker,
+            "Account": account,
+            "Deposits (HUF)": stats["Deposits HUF"],
+            "Cash Balance (HUF)": stats["Cash Balance HUF"],
+            "Invested Market Value (HUF)": stats["Invested HUF"],
+            "Total NAV (HUF)": stats["Total NAV HUF"],
+            "Net Return %": stats["Net Return %"],
+            "Annualized XIRR %": stats["Annualized XIRR %"],
+            "Total NAV (EUR)": stats["Total NAV HUF"] / eur_huf_rate,
+        })
+
+    return pd.DataFrame(summary_rows)
