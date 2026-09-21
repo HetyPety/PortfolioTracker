@@ -15,32 +15,6 @@ SUPPORTED_CURRENCIES = {
     "GBX", "GBp",
 }
 
-def get_gspread_client(json_credentials_path: str = "credentials.json"):
-    """
-    Connects via Streamlit Secrets when running online,
-    or credentials.json when running locally on desktop.
-    """
-    if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
-        return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
-    
-    if os.path.exists(json_credentials_path):
-        return gspread.service_account(filename=json_credentials_path)
-        
-    raise FileNotFoundError("Google credentials not found in Streamlit Secrets or credentials.json!")
-
-
-def load_and_sync_portfolio(
-    sheet_name_or_url: str,
-    json_credentials_path: str = "credentials.json",
-    force_resync: bool = True,
-):
-    gc = get_gspread_client(json_credentials_path)
-    sh = (
-        gc.open_by_url(sheet_name_or_url)
-        if sheet_name_or_url.startswith("http")
-        else gc.open(sheet_name_or_url)
-    )
-
 
 def clean_float(val, default: float = 0.0) -> float:
     """Robust numeric parser handling formatted strings."""
@@ -202,17 +176,26 @@ def get_live_fx_rate_to_huf(currency_code: str, is_pence: bool, eur_huf_rate: fl
     return 1.0
 
 
+def get_gspread_client(json_credentials_path: str = "credentials.json"):
+    """
+    Connects via Streamlit Secrets when running online,
+    or credentials.json when running locally on desktop.
+    """
+    if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
+        return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
+    
+    if os.path.exists(json_credentials_path):
+        return gspread.service_account(filename=json_credentials_path)
+        
+    raise FileNotFoundError("Google credentials not found in Streamlit Secrets or local credentials.json file!")
+
+
 def load_and_sync_portfolio(
     sheet_name_or_url: str,
     json_credentials_path: str = "credentials.json",
     force_resync: bool = True,
 ):
-    if not os.path.exists(json_credentials_path):
-        raise FileNotFoundError(
-            f"Credentials file '{json_credentials_path}' not found in folder!"
-        )
-
-    gc = gspread.service_account(filename=json_credentials_path)
+    gc = get_gspread_client(json_credentials_path)
     sh = (
         gc.open_by_url(sheet_name_or_url)
         if sheet_name_or_url.startswith("http")
@@ -260,7 +243,7 @@ def load_and_sync_portfolio(
 
             broker_val = str(row.get(broker_col, "")).strip() if broker_col else ""
             if not broker_val:
-                broker_val = "IBKR"  # Default fallback if blank
+                broker_val = "IBKR"
             processed_brokers.append(broker_val)
 
         df_tx["_Net_Amount_HUF"] = processed_huf_amounts
@@ -520,7 +503,6 @@ def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
 
     account_col = find_col_name(df_tx.columns, ["Account"])
     
-    # Identify unique Broker / Account combinations
     tx_pairs = set(zip(df_tx["Broker"].astype(str).str.strip(), df_tx[account_col].astype(str).str.strip())) if account_col else set()
     hold_pairs = set(zip(enriched_df["Broker"].astype(str).str.strip(), enriched_df["Account"].astype(str).str.strip())) if not enriched_df.empty else set()
     all_pairs = sorted(list(tx_pairs.union(hold_pairs)))
