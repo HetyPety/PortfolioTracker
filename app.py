@@ -45,81 +45,126 @@ with st.spinner("Fetching portfolio data and live market prices..."):
         st.code(traceback.format_exc(), language="text")
         st.stop()
 
-# Sidebar Filters
+# ==============================================================================
+# 1. GRAND TOTAL OVERVIEW
+# ==============================================================================
+st.subheader("🌐 Grand Total Portfolio Overview")
+
+grand_total_stats = calculate_cash_and_nav(df_tx, enriched_df, "All Brokers", "All Accounts")
+
+curr_sym = "€" if currency_mode == "EUR" else ""
+curr_suffix = "" if currency_mode == "EUR" else " HUF"
+fx_factor = eur_huf_rate if currency_mode == "EUR" else 1.0
+
+gt1, gt2, gt3, gt4, gt5 = st.columns(5)
+gt1.metric(
+    "Total Portfolio NAV",
+    f"{curr_sym}{grand_total_stats['Total NAV HUF'] / fx_factor:,.0f}{curr_suffix}"
+    if currency_mode == "HUF"
+    else f"{curr_sym}{grand_total_stats['Total NAV HUF'] / fx_factor:,.2f}"
+)
+gt2.metric(
+    "Total Cash Balance",
+    f"{curr_sym}{grand_total_stats['Cash Balance HUF'] / fx_factor:,.0f}{curr_suffix}"
+    if currency_mode == "HUF"
+    else f"{curr_sym}{grand_total_stats['Cash Balance HUF'] / fx_factor:,.2f}"
+)
+gt3.metric(
+    "Total Portfolio Return",
+    f"{curr_sym}{grand_total_stats['Net Gain HUF'] / fx_factor:,.0f}{curr_suffix}"
+    if currency_mode == "HUF"
+    else f"{curr_sym}{grand_total_stats['Net Gain HUF'] / fx_factor:,.2f}",
+    f"{grand_total_stats['Net Return %']:+.2f}%",
+)
+gt4.metric(
+    "Total Portfolio XIRR",
+    f"{grand_total_stats['Annualized XIRR %']:+.2f}%",
+    "Money-Weighted Rate"
+)
+gt5.metric("Live EUR/HUF Rate", f"{eur_huf_rate:.2f} HUF")
+
+st.divider()
+
+# ==============================================================================
+# 2. ACCOUNTS OVERVIEW (INDIVIDUAL CARDS & BREAKDOWN TABLE)
+# ==============================================================================
+st.subheader("🏛️ Account-Level Breakdown")
+
+df_breakdown = get_breakdown_summary(df_tx, enriched_df, eur_huf_rate)
+
+if not df_breakdown.empty:
+    # Render Individual Account Cards
+    for idx, row in df_breakdown.iterrows():
+        broker_name = row["Broker"]
+        account_name = row["Account"]
+        
+        account_stats = calculate_cash_and_nav(
+            df_tx, enriched_df, selected_broker=broker_name, selected_account=account_name
+        )
+
+        with st.container():
+            st.markdown(f"#### 🏦 **{broker_name}** — *{account_name}*")
+            ac1, ac2, ac3, ac4 = st.columns(4)
+
+            ac1.metric(
+                "Account NAV",
+                f"{curr_sym}{account_stats['Total NAV HUF'] / fx_factor:,.0f}{curr_suffix}"
+                if currency_mode == "HUF"
+                else f"{curr_sym}{account_stats['Total NAV HUF'] / fx_factor:,.2f}"
+            )
+            ac2.metric(
+                "Uninvested Cash",
+                f"{curr_sym}{account_stats['Cash Balance HUF'] / fx_factor:,.0f}{curr_suffix}"
+                if currency_mode == "HUF"
+                else f"{curr_sym}{account_stats['Cash Balance HUF'] / fx_factor:,.2f}"
+            )
+            ac3.metric(
+                "Account Return",
+                f"{curr_sym}{account_stats['Net Gain HUF'] / fx_factor:,.0f}{curr_suffix}"
+                if currency_mode == "HUF"
+                else f"{curr_sym}{account_stats['Net Gain HUF'] / fx_factor:,.2f}",
+                f"{account_stats['Net Return %']:+.2f}%",
+            )
+            ac4.metric(
+                "Account XIRR",
+                f"{account_stats['Annualized XIRR %']:+.2f}%"
+            )
+            st.markdown("---")
+
+    # Consolidated Account Summary Table
+    with st.expander("📋 View Summary Table Across All Accounts"):
+        st.dataframe(
+            df_breakdown.style.format({
+                "Deposits (HUF)": "{:,.0f}",
+                "Cash Balance (HUF)": "{:,.0f}",
+                "Invested Market Value (HUF)": "{:,.0f}",
+                "Total NAV (HUF)": "{:,.0f}",
+                "Net Return %": "{:+.2f}%",
+                "Annualized XIRR %": "{:+.2f}%",
+                "Total NAV (EUR)": "€{:,.2f}",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+st.divider()
+
+# ==============================================================================
+# 3. DETAILED HOLDINGS & TRANSACTION LOGS (FILTERABLE)
+# ==============================================================================
+st.subheader("🔍 Deep Dive: Positions & History")
+
+col_f1, col_f2 = st.columns(2)
 brokers = ["All Brokers"] + sorted(df_tx["Broker"].unique().tolist()) if not df_tx.empty else ["All Brokers"]
-selected_broker = st.sidebar.selectbox("Filter Broker", brokers)
+selected_broker = col_f1.selectbox("Filter Broker", brokers)
 
 accounts = (
     ["All Accounts"] + sorted(df_tx["Account"].unique().tolist())
     if not df_tx.empty and "Account" in df_tx.columns
     else ["All Accounts"]
 )
-selected_account = st.sidebar.selectbox("Filter Account", accounts)
+selected_account = col_f2.selectbox("Filter Account", accounts)
 
-nav_stats = calculate_cash_and_nav(
-    df_tx, enriched_df, selected_broker, selected_account
-)
-
-# Render Top Portfolio Overview Metrics
-if currency_mode == "EUR":
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric(
-        "Total Portfolio NAV", f"€{nav_stats['Total NAV HUF'] / eur_huf_rate:,.2f}"
-    )
-    c2.metric(
-        "Uninvested Cash", f"€{nav_stats['Cash Balance HUF'] / eur_huf_rate:,.2f}"
-    )
-    c3.metric(
-        "Total Net Return",
-        f"€{nav_stats['Net Gain HUF'] / eur_huf_rate:,.2f}",
-        f"{nav_stats['Net Return %']:+.2f}%",
-    )
-    c4.metric(
-        "Annualized XIRR",
-        f"{nav_stats['Annualized XIRR %']:+.2f}%",
-        "Money-Weighted Rate"
-    )
-    c5.metric("Live EUR/HUF Rate", f"{eur_huf_rate:.2f} HUF")
-else:
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Total Portfolio NAV", f"{nav_stats['Total NAV HUF']:,.0f} HUF")
-    c2.metric("Uninvested Cash", f"{nav_stats['Cash Balance HUF']:,.0f} HUF")
-    c3.metric(
-        "Total Net Return",
-        f"{nav_stats['Net Gain HUF']:,.0f} HUF",
-        f"{nav_stats['Net Return %']:+.2f}%",
-    )
-    c4.metric(
-        "Annualized XIRR",
-        f"{nav_stats['Annualized XIRR %']:+.2f}%",
-        "Money-Weighted Rate"
-    )
-    c5.metric("Live EUR/HUF Rate", f"{eur_huf_rate:.2f} HUF")
-
-st.divider()
-
-# Broker / Account Summary Breakdown Section
-st.subheader("📊 Broker & Account Breakdown")
-df_breakdown = get_breakdown_summary(df_tx, enriched_df, eur_huf_rate)
-
-if not df_breakdown.empty:
-    st.dataframe(
-        df_breakdown.style.format({
-            "Deposits (HUF)": "{:,.0f}",
-            "Cash Balance (HUF)": "{:,.0f}",
-            "Invested Market Value (HUF)": "{:,.0f}",
-            "Total NAV (HUF)": "{:,.0f}",
-            "Net Return %": "{:+.2f}%",
-            "Annualized XIRR %": "{:+.2f}%",
-            "Total NAV (EUR)": "€{:,.2f}",
-        }),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-st.divider()
-
-# Filter active holdings display
 display_df = enriched_df.copy() if not enriched_df.empty else pd.DataFrame()
 if not display_df.empty:
     if selected_broker != "All Brokers":
@@ -127,7 +172,6 @@ if not display_df.empty:
     if selected_account != "All Accounts":
         display_df = display_df[display_df["Account"] == selected_account]
 
-# Tabbed Interface
 tab_holdings, tab_closed, tab_divs, tab_txs = st.tabs([
     "Active Holdings",
     "Realized Performance",
