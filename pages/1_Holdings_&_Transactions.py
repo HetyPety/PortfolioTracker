@@ -4,6 +4,7 @@ import streamlit as st
 from engine import (
     calculate_weighted_positions,
     enrich_with_live_prices,
+    get_consolidated_holdings,
     load_and_sync_portfolio,
 )
 
@@ -19,7 +20,7 @@ SHEET_NAME_OR_URL = st.sidebar.text_input(
     "Google Sheet Name or URL",
     value=DEFAULT_SHEET_URL,
 )
-currency_mode = st.sidebar.radio("Display Currency", ["HUF", "EUR"])
+currency_mode = st.sidebar.radio("Display Currency", ["HUF", "EUR"], index=0)
 
 if st.sidebar.button("Refresh Portfolio Data"):
     st.cache_data.clear()
@@ -42,7 +43,6 @@ with st.spinner("Fetching portfolio data and live market prices..."):
         st.code(traceback.format_exc(), language="text")
         st.stop()
 
-# Filters
 col_f1, col_f2 = st.columns(2)
 brokers = ["All Brokers"] + sorted(df_tx["Broker"].unique().tolist()) if not df_tx.empty else ["All Brokers"]
 selected_broker = col_f1.selectbox("Filter Broker", brokers)
@@ -70,23 +70,64 @@ tab_holdings, tab_closed, tab_divs, tab_txs = st.tabs([
 
 with tab_holdings:
     if not display_df.empty:
-        cols = [
-            "Broker",
-            "Account",
-            "Ticker",
-            "Shares",
-            "Live Price",
-            "Currency",
-            "PnL %",
-            "Div Yield %",
-            "Next Earnings",
-        ]
-        cols += (
-            ["Market Value EUR", "PnL EUR"]
-            if currency_mode == "EUR"
-            else ["Market Value HUF", "PnL HUF"]
-        )
-        st.dataframe(display_df[cols], use_container_width=True, hide_index=True)
+        st.markdown("### 📊 Consolidated Company Holdings (Unified Across Accounts)")
+        df_consolidated = get_consolidated_holdings(display_df, eur_huf_rate)
+
+        if not df_consolidated.empty:
+            if currency_mode == "EUR":
+                c_cols = [
+                    "Ticker", "Total Shares", "Live Price", "Currency",
+                    "Avg Cost EUR", "Total Cost EUR", "Market Value EUR", "PnL EUR", "PnL %",
+                    "Expected Div Yield %", "Next Earnings", "Next Ex-Div Date", "Accounts"
+                ]
+                st.dataframe(
+                    df_consolidated[c_cols].style.format({
+                        "Total Shares": "{:,.2f}",
+                        "Live Price": "{:,.2f}",
+                        "Avg Cost EUR": "€{:,.2f}",
+                        "Total Cost EUR": "€{:,.2f}",
+                        "Market Value EUR": "€{:,.2f}",
+                        "PnL EUR": "€{:,.2f}",
+                        "PnL %": "{:+.2f}%",
+                        "Expected Div Yield %": "{:.2f}%",
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                c_cols = [
+                    "Ticker", "Total Shares", "Live Price", "Currency",
+                    "Avg Cost HUF", "Total Cost HUF", "Market Value HUF", "PnL HUF", "PnL %",
+                    "Expected Div Yield %", "Next Earnings", "Next Ex-Div Date", "Accounts"
+                ]
+                st.dataframe(
+                    df_consolidated[c_cols].style.format({
+                        "Total Shares": "{:,.2f}",
+                        "Live Price": "{:,.2f}",
+                        "Avg Cost HUF": "{:,.0f} HUF",
+                        "Total Cost HUF": "{:,.0f} HUF",
+                        "Market Value HUF": "{:,.0f} HUF",
+                        "PnL HUF": "{:,.0f} HUF",
+                        "PnL %": "{:+.2f}%",
+                        "Expected Div Yield %": "{:.2f}%",
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        st.divider()
+
+        with st.expander("🔍 View Detailed Breakdown Per Account / Broker"):
+            cols = [
+                "Broker", "Account", "Ticker", "Shares", "Live Price", "Currency",
+                "PnL %", "Div Yield %", "Next Earnings", "Next Ex-Div Date"
+            ]
+            cols += (
+                ["Market Value EUR", "PnL EUR"]
+                if currency_mode == "EUR"
+                else ["Market Value HUF", "PnL HUF"]
+            )
+            st.dataframe(display_df[cols], use_container_width=True, hide_index=True)
     else:
         st.info("No active holdings found.")
 
