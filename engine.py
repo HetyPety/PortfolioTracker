@@ -73,7 +73,7 @@ def parse_date_string(date_val) -> datetime:
     return pd.to_datetime(date_val, dayfirst=True).to_pydatetime()
 
 
-def validate_and_parse_currency(currency_str: str) -> tuple[str, bool]:
+def validate_and_parse_currency(currency_str: str):
     """Validates currency codes against supported currencies."""
     raw_curr = (
         str(currency_str)
@@ -107,7 +107,7 @@ def find_col_name(df_columns, possible_names, fallback_idx: int = -1) -> str:
     return ""
 
 
-def calculate_xirr(cash_flows: list[float], dates: list[datetime], estimate: float = 0.1) -> float:
+def calculate_xirr(cash_flows, dates, estimate: float = 0.1) -> float:
     """Pure Python Newton-Raphson XIRR calculation engine."""
     if not cash_flows or len(cash_flows) < 2 or sum(1 for c in cash_flows if c < 0) == 0:
         return 0.0
@@ -116,13 +116,13 @@ def calculate_xirr(cash_flows: list[float], dates: list[datetime], estimate: flo
 
     def npv(rate):
         if rate <= -0.9999:
-            return float('inf')
+            return float("inf")
         return sum([cf / ((1.0 + rate) ** ((d - d0).days / 365.0)) for cf, d in zip(cash_flows, dates)])
 
     def npv_derivative(rate):
         if rate <= -0.9999:
-            return float('inf')
-        return sum([-( (d - d0).days / 365.0 ) * cf / ((1.0 + rate) ** (((d - d0).days / 365.0) + 1.0)) for cf, d in zip(cash_flows, dates)])
+            return float("inf")
+        return sum([-(((d - d0).days / 365.0)) * cf / ((1.0 + rate) ** (((d - d0).days / 365.0) + 1.0)) for cf, d in zip(cash_flows, dates)])
 
     r = estimate
     for _ in range(100):
@@ -247,10 +247,6 @@ def load_and_sync_portfolio(
 
 
 def calculate_weighted_positions(df_tx, ticker_map):
-    """
-    Calculates exact weighted average cost in native transaction currency
-    and HUF simultaneously.
-    """
     if df_tx.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -468,10 +464,6 @@ def enrich_with_live_prices(active_df):
 
 
 def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
-    """
-    Consolidates holdings across multiple brokers/accounts into 1 row per ticker.
-    Calculates true native weighted average cost from transaction history.
-    """
     if enriched_df.empty:
         return pd.DataFrame()
 
@@ -487,7 +479,6 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
         pnl_huf = mkt_val_huf - total_cost_huf
         pnl_pct = (pnl_huf / total_cost_huf * 100.0) if total_cost_huf > 0 else 0.0
         
-        # Exact native weighted average purchase price
         avg_cost_native = total_cost_native / total_shares if total_shares > 0 else 0.0
 
         weight_pct = (mkt_val_huf / total_nav_huf * 100.0) if total_nav_huf > 0 else 0.0
