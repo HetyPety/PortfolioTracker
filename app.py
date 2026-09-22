@@ -13,10 +13,10 @@ st.cache_data.clear()
 st.cache_resource.clear()
 
 st.set_page_config(
-    page_title="Portfolio Control Center", page_icon="📈", layout="wide"
+    page_title="Executive Dashboard", page_icon="🌐", layout="wide"
 )
 
-st.title("📈 Portfolio Control Center")
+st.title("🌐 Portfolio Executive Dashboard")
 
 SHEET_NAME_OR_URL = st.sidebar.text_input(
     "Google Sheet Name or URL",
@@ -100,7 +100,6 @@ st.subheader("🏛️ Account-Level Breakdown")
 df_breakdown = get_breakdown_summary(df_tx, enriched_df, eur_huf_rate)
 
 if not df_breakdown.empty:
-    # Render Individual Account Cards with Deposits
     for idx, row in df_breakdown.iterrows():
         broker_name = row["Broker"]
         account_name = row["Account"]
@@ -144,7 +143,6 @@ if not df_breakdown.empty:
             )
             st.markdown("---")
 
-    # Consolidated Account Summary Table
     with st.expander("📋 View Summary Table Across All Accounts"):
         st.dataframe(
             df_breakdown.style.format({
@@ -159,99 +157,3 @@ if not df_breakdown.empty:
             use_container_width=True,
             hide_index=True,
         )
-
-st.divider()
-
-# ==============================================================================
-# 3. DETAILED HOLDINGS & TRANSACTION LOGS (FILTERABLE)
-# ==============================================================================
-st.subheader("🔍 Deep Dive: Positions & History")
-
-col_f1, col_f2 = st.columns(2)
-brokers = ["All Brokers"] + sorted(df_tx["Broker"].unique().tolist()) if not df_tx.empty else ["All Brokers"]
-selected_broker = col_f1.selectbox("Filter Broker", brokers)
-
-accounts = (
-    ["All Accounts"] + sorted(df_tx["Account"].unique().tolist())
-    if not df_tx.empty and "Account" in df_tx.columns
-    else ["All Accounts"]
-)
-selected_account = col_f2.selectbox("Filter Account", accounts)
-
-display_df = enriched_df.copy() if not enriched_df.empty else pd.DataFrame()
-if not display_df.empty:
-    if selected_broker != "All Brokers":
-        display_df = display_df[display_df["Broker"] == selected_broker]
-    if selected_account != "All Accounts":
-        display_df = display_df[display_df["Account"] == selected_account]
-
-tab_holdings, tab_closed, tab_divs, tab_txs = st.tabs([
-    "Active Holdings",
-    "Realized Performance",
-    "Dividends & Taxes",
-    "All Transactions",
-])
-
-with tab_holdings:
-    if not display_df.empty:
-        cols = [
-            "Broker",
-            "Account",
-            "Ticker",
-            "Shares",
-            "Live Price",
-            "Currency",
-            "PnL %",
-            "Div Yield %",
-            "Next Earnings",
-        ]
-        cols += (
-            ["Market Value EUR", "PnL EUR"]
-            if currency_mode == "EUR"
-            else ["Market Value HUF", "PnL HUF"]
-        )
-        st.dataframe(display_df[cols], use_container_width=True, hide_index=True)
-    else:
-        st.info("No active holdings found.")
-
-with tab_closed:
-    if not realized_df.empty:
-        r_df = realized_df.copy()
-        if selected_broker != "All Brokers":
-            r_df = r_df[r_df["Broker"] == selected_broker]
-        if selected_account != "All Accounts":
-            r_df = r_df[r_df["Account"] == selected_account]
-        st.dataframe(r_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No closed positions found.")
-
-with tab_divs:
-    if not df_tx.empty:
-        type_col = next((c for c in df_tx.columns if c.lower() in ["transaction type", "type", "buy/sell", "tipus"]), None)
-        if type_col:
-            div_df = df_tx[df_tx[type_col].astype(str).str.strip().str.title().isin(["Dividend", "Foreign Tax Withholding"])]
-            if selected_broker != "All Brokers":
-                div_df = div_df[div_df["Broker"] == selected_broker]
-            if selected_account != "All Accounts":
-                acc_col = next((c for c in div_df.columns if c.lower() == "account"), None)
-                if acc_col:
-                    div_df = div_df[div_df[acc_col].astype(str).str.strip() == selected_account]
-            if not div_df.empty:
-                st.dataframe(div_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("No dividends or tax withholding records found.")
-        else:
-            st.info("Transaction type column not found.")
-    else:
-        st.info("No transaction history available.")
-
-with tab_txs:
-    if not df_tx.empty:
-        tx_display = df_tx.copy()
-        if selected_broker != "All Brokers":
-            tx_display = tx_display[tx_display["Broker"] == selected_broker]
-        if selected_account != "All Accounts":
-            tx_display = tx_display[tx_display["Account"] == selected_account]
-        st.dataframe(tx_display, use_container_width=True, hide_index=True)
-    else:
-        st.info("No transaction history recorded.")
