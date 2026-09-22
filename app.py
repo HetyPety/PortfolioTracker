@@ -24,7 +24,7 @@ SHEET_NAME_OR_URL = st.sidebar.text_input(
     "Google Sheet Name or URL",
     value=DEFAULT_SHEET_URL,
 )
-currency_mode = st.sidebar.radio("Display Currency", ["EUR", "HUF"])
+currency_mode = st.sidebar.radio("Display Currency", ["HUF", "EUR"])
 
 if st.sidebar.button("Refresh Portfolio Data"):
     st.cache_data.clear()
