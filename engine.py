@@ -11,8 +11,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SUPPORTED_CURRENCIES = {
     "HUF", "EUR", "USD", "GBP", "CHF", "DKK", "NOK", "SEK",
-    "PLN", "CZK", "RON", "ILS", "CAD", "AUD", "JPY", "SGD", "GBPX",
-    "GBX", "GBp",
+    "PLN", "CZK", "RON", "CAD", "AUD", "JPY", "SGD", "GBPX",
+    "GBX", "GBp", "ILS",
 }
 
 
@@ -177,10 +177,6 @@ def get_live_fx_rate_to_huf(currency_code: str, is_pence: bool, eur_huf_rate: fl
 
 
 def get_gspread_client(json_credentials_path: str = "credentials.json"):
-    """
-    Connects via Streamlit Secrets when running online,
-    or credentials.json when running locally on desktop.
-    """
     if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
     
@@ -202,7 +198,6 @@ def load_and_sync_portfolio(
         else gc.open(sheet_name_or_url)
     )
 
-    # 1. Load Ticker Mapping Tab
     ticker_map = {}
     try:
         ws_map = sh.worksheet("Ticker_Mapping")
@@ -215,7 +210,6 @@ def load_and_sync_portfolio(
     except Exception:
         pass
 
-    # 2. Load Transactions Tab
     ws_tx = sh.worksheet("Transactions")
     all_tx_rows = ws_tx.get_all_values()
 
@@ -381,6 +375,7 @@ def enrich_with_live_prices(active_df):
 
         div_yield = 0.0
         next_earnings = "N/A"
+        ex_div_date = "N/A"
         try:
             t = yf.Ticker(ticker)
             if live_price == 0.0:
@@ -388,9 +383,21 @@ def enrich_with_live_prices(active_df):
                     t.info.get("currentPrice") or t.info.get("regularMarketPrice") or 0
                 )
             div_yield = float(t.info.get("dividendYield") or 0.0) * 100.0
+            
             cal = t.calendar
-            if cal is not None and "Earnings Date" in cal:
+            if cal is not None and isinstance(cal, dict) and "Earnings Date" in cal:
                 next_earnings = str(cal["Earnings Date"][0])[:10]
+            elif hasattr(cal, "get") and cal.get("Earnings Date") is not None:
+                next_earnings = str(cal.get("Earnings Date")[0])[:10]
+
+            raw_ex_div = t.info.get("exDividendDate")
+            if raw_ex_div:
+                if isinstance(raw_ex_div, (int, float)):
+                    ex_div_date = datetime.fromtimestamp(raw_ex_div).strftime("%Y-%m-%d")
+                else:
+                    ex_div_date = str(raw_ex_div)[:10]
+            elif cal is not None and isinstance(cal, dict) and "Ex-Dividend Date" in cal:
+                ex_div_date = str(cal["Ex-Dividend Date"][0])[:10]
         except Exception:
             pass
 
@@ -420,9 +427,62 @@ def enrich_with_live_prices(active_df):
             "PnL EUR": pnl_huf / eur_huf_rate,
             "Div Yield %": div_yield,
             "Next Earnings": next_earnings,
+            "Next Ex-Div Date": ex_div_date,
         })
 
     return pd.DataFrame(enriched), eur_huf_rate
+
+
+def get_consolidated_holdings(enriched_df, eur_huf_rate=400.0):
+    """
+    Consolidates holdings across multiple brokers/accounts into 1 row per ticker.
+    """
+    if enriched_df.empty:
+        return pd.DataFrame()
+
+    grouped = enriched_df.groupby("Ticker")
+
+    consolidated = []
+    for ticker, group in grouped:
+        total_shares = group["Shares"].sum()
+        total_cost_huf = group["Cost HUF"].sum()
+        mkt_val_huf = group["Market Value HUF"].sum()
+        pnl_huf = mkt_val_huf - total_cost_huf
+        pnl_pct = (pnl_huf / total_cost_huf * 100.0) if total_cost_huf > 0 else 0.0
+        wac_huf = total_cost_huf / total_shares if total_shares > 0 else 0.0
+
+        brokers = ", ".join(sorted(group["Broker"].unique().tolist()))
+        accounts = ", ".join(sorted(group["Account"].unique().tolist()))
+
+        first_row = group.iloc[0]
+        live_price = first_row["Live Price"]
+        curr = first_row["Currency"]
+        div_yield = first_row["Div Yield %"]
+        next_earnings = first_row["Next Earnings"]
+        ex_div_date = first_row.get("Next Ex-Div Date", "N/A")
+
+        consolidated.append({
+            "Ticker": ticker,
+            "Total Shares": total_shares,
+            "Live Price": live_price,
+            "Currency": curr,
+            "Avg Cost HUF": wac_huf,
+            "Total Cost HUF": total_cost_huf,
+            "Market Value HUF": mkt_val_huf,
+            "PnL HUF": pnl_huf,
+            "PnL %": pnl_pct,
+            "Avg Cost EUR": wac_huf / eur_huf_rate,
+            "Total Cost EUR": total_cost_huf / eur_huf_rate,
+            "Market Value EUR": mkt_val_huf / eur_huf_rate,
+            "PnL EUR": pnl_huf / eur_huf_rate,
+            "Expected Div Yield %": div_yield,
+            "Next Earnings": next_earnings,
+            "Next Ex-Div Date": ex_div_date,
+            "Brokers": brokers,
+            "Accounts": accounts,
+        })
+
+    return pd.DataFrame(consolidated)
 
 
 def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", selected_account="All Accounts"):
@@ -497,7 +557,6 @@ def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", se
 
 
 def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
-    """Generates a structured summary DataFrame grouped by Broker and Account."""
     if df_tx.empty:
         return pd.DataFrame()
 
