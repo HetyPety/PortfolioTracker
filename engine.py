@@ -247,6 +247,10 @@ def load_and_sync_portfolio(
 
 
 def calculate_weighted_positions(df_tx, ticker_map):
+    """
+    Calculates exact weighted average cost in native purchase currency
+    (from the 'Price' column) and HUF base currency simultaneously.
+    """
     if df_tx.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -258,8 +262,8 @@ def calculate_weighted_positions(df_tx, ticker_map):
     type_col = find_col_name(df_sorted.columns, ["Transaction Type", "Type", "Buy/Sell", "Tipus"])
     ticker_col = find_col_name(df_sorted.columns, ["Symbol", "Ticker"])
     qty_col = find_col_name(df_sorted.columns, ["Quantity", "Shares", "Number", "Qty"])
+    price_col = find_col_name(df_sorted.columns, ["Price", "Ar", "Unit Price"])
     curr_col = find_col_name(df_sorted.columns, ["Price Currency", "Currency", "Curr"])
-    net_amt_col = find_col_name(df_sorted.columns, ["Net Amount"])
 
     positions = {}
     realized_trades = []
@@ -276,7 +280,9 @@ def calculate_weighted_positions(df_tx, ticker_map):
         currency = str(row.get(curr_col, "EUR")).strip()
 
         qty = abs(clean_float(row.get(qty_col, 0)))
-        net_native = abs(clean_float(row.get(net_amt_col, 0))) if net_amt_col else 0.0
+        unit_price = abs(clean_float(row.get(price_col, 0))) if price_col else 0.0
+        net_native = qty * unit_price
+        
         net_huf = clean_float(row.get("_Net_Amount_HUF", 0))
         abs_cost_huf = abs(net_huf)
 
@@ -416,7 +422,7 @@ def enrich_with_live_prices(active_df):
             if cal is not None and isinstance(cal, dict) and "Earnings Date" in cal:
                 next_earnings = str(cal["Earnings Date"][0])[:10]
             elif hasattr(cal, "get") and cal.get("Earnings Date") is not None:
-                next_earnings = str(cal.get("Earnings Date")[0])[:10]
+                next_earnings = str(cal.get("Earnings Date"][0])[:10]
 
             raw_ex_div = t.info.get("exDividendDate")
             if raw_ex_div:
