@@ -40,7 +40,6 @@ with st.spinner("Fetching portfolio data and live market prices..."):
         active_df, realized_df = calculate_weighted_positions(df_tx, ticker_map)
         enriched_df, eur_huf_rate = enrich_with_live_prices(active_df)
         
-        # Fetch Total Portfolio NAV to calculate position weights
         grand_total_stats = calculate_cash_and_nav(df_tx, enriched_df, "All Brokers", "All Accounts")
         total_nav_huf = grand_total_stats["Total NAV HUF"]
     except Exception as e:
