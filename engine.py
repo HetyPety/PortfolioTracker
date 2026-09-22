@@ -416,7 +416,7 @@ def enrich_with_live_prices(active_df):
             if cal is not None and isinstance(cal, dict) and "Earnings Date" in cal:
                 next_earnings = str(cal["Earnings Date"][0])[:10]
             elif hasattr(cal, "get") and cal.get("Earnings Date") is not None:
-                next_earnings = str(cal.get("Earnings Date"][0])[:10]
+                next_earnings = str(cal.get("Earnings Date")[0])[:10]
 
             raw_ex_div = t.info.get("exDividendDate")
             if raw_ex_div:
