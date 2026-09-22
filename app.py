@@ -1,13 +1,7 @@
 import traceback
 import pandas as pd
 import streamlit as st
-from engine import (
-    calculate_cash_and_nav,
-    calculate_weighted_positions,
-    enrich_with_live_prices,
-    get_breakdown_summary,
-    load_and_sync_portfolio,
-)
+import engine
 
 st.cache_data.clear()
 st.cache_resource.clear()
@@ -37,11 +31,11 @@ if not SHEET_NAME_OR_URL:
 
 with st.spinner("Fetching portfolio data and live market prices..."):
     try:
-        df_tx, ticker_map = load_and_sync_portfolio(
+        df_tx, ticker_map = engine.load_and_sync_portfolio(
             SHEET_NAME_OR_URL, force_resync=True
         )
-        active_df, realized_df = calculate_weighted_positions(df_tx, ticker_map)
-        enriched_df, eur_huf_rate = enrich_with_live_prices(active_df)
+        active_df, realized_df = engine.calculate_weighted_positions(df_tx, ticker_map)
+        enriched_df, eur_huf_rate = engine.enrich_with_live_prices(active_df)
     except Exception as e:
         st.error(f"Error loading portfolio: {e}")
         st.code(traceback.format_exc(), language="text")
@@ -52,7 +46,7 @@ with st.spinner("Fetching portfolio data and live market prices..."):
 # ==============================================================================
 st.subheader("🌐 Grand Total Portfolio Overview")
 
-grand_total_stats = calculate_cash_and_nav(df_tx, enriched_df, "All Brokers", "All Accounts")
+grand_total_stats = engine.calculate_cash_and_nav(df_tx, enriched_df, "All Brokers", "All Accounts")
 
 curr_sym = "€" if currency_mode == "EUR" else ""
 curr_suffix = "" if currency_mode == "EUR" else " HUF"
@@ -99,14 +93,14 @@ st.divider()
 # ==============================================================================
 st.subheader("🏛️ Account-Level Breakdown")
 
-df_breakdown = get_breakdown_summary(df_tx, enriched_df, eur_huf_rate)
+df_breakdown = engine.get_breakdown_summary(df_tx, enriched_df, eur_huf_rate)
 
 if not df_breakdown.empty:
     for idx, row in df_breakdown.iterrows():
         broker_name = row["Broker"]
         account_name = row["Account"]
         
-        account_stats = calculate_cash_and_nav(
+        account_stats = engine.calculate_cash_and_nav(
             df_tx, enriched_df, selected_broker=broker_name, selected_account=account_name
         )
 
