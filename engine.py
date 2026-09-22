@@ -259,8 +259,7 @@ def calculate_weighted_positions(df_tx, ticker_map):
 
         raw_ticker = str(row.get(ticker_col, "")).strip().upper()
         
-        # 🚨 FIX: Allow stocks with dots (e.g. BCHN.SW, WIE.VI). 
-        # Skip only explicitly empty tickers, dashes, or obvious Forex pairs (.HUF, .EUR)
+        # Skip explicitly empty tickers, dashes, or Forex pairs (.HUF, .EUR)
         if not raw_ticker or raw_ticker == "-" or raw_ticker.endswith(".HUF") or raw_ticker.endswith(".EUR"):
             continue
         
@@ -273,7 +272,7 @@ def calculate_weighted_positions(df_tx, ticker_map):
         qty = abs(clean_float(row.get(qty_col, 0)))
         unit_price = abs(clean_float(row.get(price_col, 0))) if price_col else 0.0
         
-        # Calculate exactly how much was spent natively
+        # Total cost natively spent
         native_amount = qty * unit_price
         
         net_huf = clean_float(row.get("_Net_Amount_HUF", 0))
@@ -470,20 +469,21 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
     for ticker, group in grouped:
         total_shares = group["Shares"].sum()
         total_cost_native = group["Total Cost Native"].sum()
-        total_cost_huf = group["Cost HUF"].sum()
         mkt_val_huf = group["Market Value HUF"].sum()
-        
-        pnl_huf = mkt_val_huf - total_cost_huf
-        pnl_pct = (pnl_huf / total_cost_huf * 100.0) if total_cost_huf > 0 else 0.0
-        
-        # Safe division for exact native average cost calculation
-        avg_cost_native = total_cost_native / total_shares if total_shares > 0 else 0.0
-
-        weight_pct = (mkt_val_huf / total_nav_huf * 100.0) if total_nav_huf > 0 else 0.0
 
         first_row = group.iloc[0]
         live_price = first_row["Live Price"]
         curr = first_row["Currency"]
+
+        # Exact native weighted average cost
+        avg_cost_native = total_cost_native / total_shares if total_shares > 0 else 0.0
+
+        # Native PnL % calculated strictly in the holding's quote currency
+        pnl_pct_native = ((live_price - avg_cost_native) / avg_cost_native * 100.0) if avg_cost_native > 0 else 0.0
+
+        # Portfolio weight % in HUF
+        weight_pct = (mkt_val_huf / total_nav_huf * 100.0) if total_nav_huf > 0 else 0.0
+
         accounts = ", ".join(sorted(group["Account"].unique().tolist()))
         brokers = ", ".join(sorted(group["Broker"].unique().tolist()))
 
@@ -497,7 +497,7 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
             "Live Price": live_price,
             "Currency": curr,
             "Avg Cost": avg_cost_native,
-            "PnL %": pnl_pct,
+            "PnL %": pnl_pct_native,
             "Weight %": weight_pct,
             "Div Yield %": div_yield,
             "Next Earnings": next_earnings,
