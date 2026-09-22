@@ -2,6 +2,7 @@ import traceback
 import pandas as pd
 import streamlit as st
 from engine import (
+    calculate_cash_and_nav,
     calculate_weighted_positions,
     enrich_with_live_prices,
     get_consolidated_holdings,
@@ -38,6 +39,10 @@ with st.spinner("Fetching portfolio data and live market prices..."):
         )
         active_df, realized_df = calculate_weighted_positions(df_tx, ticker_map)
         enriched_df, eur_huf_rate = enrich_with_live_prices(active_df)
+        
+        # Fetch Total Portfolio NAV to calculate position weights
+        grand_total_stats = calculate_cash_and_nav(df_tx, enriched_df, "All Brokers", "All Accounts")
+        total_nav_huf = grand_total_stats["Total NAV HUF"]
     except Exception as e:
         st.error(f"Error loading portfolio: {e}")
         st.code(traceback.format_exc(), language="text")
@@ -70,50 +75,36 @@ tab_holdings, tab_closed, tab_divs, tab_txs = st.tabs([
 
 with tab_holdings:
     if not display_df.empty:
-        st.markdown("### 📊 Consolidated Company Holdings (Unified Across Accounts)")
-        df_consolidated = get_consolidated_holdings(display_df, eur_huf_rate)
+        st.markdown("### 📊 Consolidated Company Holdings")
+        df_consolidated = get_consolidated_holdings(display_df, total_nav_huf=total_nav_huf)
 
         if not df_consolidated.empty:
-            if currency_mode == "EUR":
-                c_cols = [
-                    "Ticker", "Total Shares", "Live Price", "Currency",
-                    "Avg Cost EUR", "Total Cost EUR", "Market Value EUR", "PnL EUR", "PnL %",
-                    "Expected Div Yield %", "Next Earnings", "Next Ex-Div Date", "Accounts"
-                ]
-                st.dataframe(
-                    df_consolidated[c_cols].style.format({
-                        "Total Shares": "{:,.2f}",
-                        "Live Price": "{:,.2f}",
-                        "Avg Cost EUR": "€{:,.2f}",
-                        "Total Cost EUR": "€{:,.2f}",
-                        "Market Value EUR": "€{:,.2f}",
-                        "PnL EUR": "€{:,.2f}",
-                        "PnL %": "{:+.2f}%",
-                        "Expected Div Yield %": "{:.2f}%",
-                    }),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                c_cols = [
-                    "Ticker", "Total Shares", "Live Price", "Currency",
-                    "Avg Cost HUF", "Total Cost HUF", "Market Value HUF", "PnL HUF", "PnL %",
-                    "Expected Div Yield %", "Next Earnings", "Next Ex-Div Date", "Accounts"
-                ]
-                st.dataframe(
-                    df_consolidated[c_cols].style.format({
-                        "Total Shares": "{:,.2f}",
-                        "Live Price": "{:,.2f}",
-                        "Avg Cost HUF": "{:,.0f} HUF",
-                        "Total Cost HUF": "{:,.0f} HUF",
-                        "Market Value HUF": "{:,.0f} HUF",
-                        "PnL HUF": "{:,.0f} HUF",
-                        "PnL %": "{:+.2f}%",
-                        "Expected Div Yield %": "{:.2f}%",
-                    }),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+            c_cols = [
+                "Ticker",
+                "Total Shares",
+                "Live Price",
+                "Currency",
+                "Avg Cost",
+                "PnL %",
+                "Weight %",
+                "Div Yield %",
+                "Next Earnings",
+                "Next Ex-Div Date",
+                "Accounts",
+            ]
+            
+            st.dataframe(
+                df_consolidated[c_cols].style.format({
+                    "Total Shares": "{:,.2f}",
+                    "Live Price": "{:,.2f}",
+                    "Avg Cost": "{:,.2f}",
+                    "PnL %": "{:+.2f}%",
+                    "Weight %": "{:.2f}%",
+                    "Div Yield %": "{:.2f}%",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         st.divider()
 
