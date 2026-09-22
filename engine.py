@@ -15,9 +15,7 @@ SUPPORTED_CURRENCIES = {
     "GBX", "GBp", "ILS",
 }
 
-
 def clean_float(val, default: float = 0.0) -> float:
-    """Robust numeric parser handling formatted strings."""
     if val is None or pd.isna(val):
         return default
     if isinstance(val, (int, float)):
@@ -48,9 +46,7 @@ def clean_float(val, default: float = 0.0) -> float:
     except ValueError:
         return default
 
-
 def parse_date_string(date_val) -> datetime:
-    """Robust date parser handling standard and Hungarian formats."""
     if isinstance(date_val, (datetime, pd.Timestamp)):
         return datetime(date_val.year, date_val.month, date_val.day)
 
@@ -72,9 +68,7 @@ def parse_date_string(date_val) -> datetime:
 
     return pd.to_datetime(date_val, dayfirst=True).to_pydatetime()
 
-
 def validate_and_parse_currency(currency_str: str):
-    """Validates currency codes against supported currencies."""
     raw_curr = (
         str(currency_str)
         .replace("\xa0", "")
@@ -95,7 +89,6 @@ def validate_and_parse_currency(currency_str: str):
     else:
         return raw_curr, False
 
-
 def find_col_name(df_columns, possible_names, fallback_idx: int = -1) -> str:
     col_map = {str(c).strip().lower(): str(c) for c in df_columns}
     for name in possible_names:
@@ -106,9 +99,7 @@ def find_col_name(df_columns, possible_names, fallback_idx: int = -1) -> str:
         return str(df_columns[fallback_idx])
     return ""
 
-
 def calculate_xirr(cash_flows, dates, estimate: float = 0.1) -> float:
-    """Pure Python Newton-Raphson XIRR calculation engine."""
     if not cash_flows or len(cash_flows) < 2 or sum(1 for c in cash_flows if c < 0) == 0:
         return 0.0
 
@@ -139,9 +130,7 @@ def calculate_xirr(cash_flows, dates, estimate: float = 0.1) -> float:
 
     return 0.0
 
-
 def get_live_fx_rate_to_huf(currency_code: str, is_pence: bool, eur_huf_rate: float) -> float:
-    """Safely fetches live exchange rate from currency_code to HUF."""
     if currency_code == "HUF":
         return 1.0
     if currency_code == "EUR":
@@ -175,7 +164,6 @@ def get_live_fx_rate_to_huf(currency_code: str, is_pence: bool, eur_huf_rate: fl
 
     return 1.0
 
-
 def get_gspread_client(json_credentials_path: str = "credentials.json"):
     if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
@@ -184,7 +172,6 @@ def get_gspread_client(json_credentials_path: str = "credentials.json"):
         return gspread.service_account(filename=json_credentials_path)
         
     raise FileNotFoundError("Google credentials not found in Streamlit Secrets or local credentials.json file!")
-
 
 def load_and_sync_portfolio(
     sheet_name_or_url: str,
@@ -245,12 +232,7 @@ def load_and_sync_portfolio(
 
     return df_tx, ticker_map
 
-
 def calculate_weighted_positions(df_tx, ticker_map):
-    """
-    Calculates exact weighted average cost in native purchase currency
-    (from the 'Price' column) and HUF base currency simultaneously.
-    """
     if df_tx.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -270,18 +252,27 @@ def calculate_weighted_positions(df_tx, ticker_map):
 
     for _, row in df_sorted.iterrows():
         tx_type = str(row.get(type_col, "")).strip().title()
+        
+        # Only process "Buy" or "Sell" transaction types
         if tx_type not in ["Buy", "Sell"]:
             continue
 
+        raw_ticker = str(row.get(ticker_col, "")).strip().upper()
+        # Skip forex trade lines and deposits explicitly
+        if not raw_ticker or "." in raw_ticker or raw_ticker == "-": 
+             continue
+        
+        ticker = ticker_map.get(raw_ticker, raw_ticker)
+
         broker = str(row.get(broker_col, "IBKR")).strip() or "IBKR"
         account = str(row.get(account_col, "")).strip()
-        raw_ticker = str(row.get(ticker_col, "")).strip().upper()
-        ticker = ticker_map.get(raw_ticker, raw_ticker)
         currency = str(row.get(curr_col, "EUR")).strip()
 
         qty = abs(clean_float(row.get(qty_col, 0)))
         unit_price = abs(clean_float(row.get(price_col, 0))) if price_col else 0.0
-        net_native = qty * unit_price
+        
+        # Calculate exactly how much was spent natively
+        native_amount = qty * unit_price
         
         net_huf = clean_float(row.get("_Net_Amount_HUF", 0))
         abs_cost_huf = abs(net_huf)
@@ -302,7 +293,7 @@ def calculate_weighted_positions(df_tx, ticker_map):
 
         if tx_type == "Buy":
             pos["Shares"] += qty
-            pos["Total_Cost_Native"] += net_native
+            pos["Total_Cost_Native"] += native_amount
             pos["Total_Cost_HUF"] += abs_cost_huf
         elif tx_type == "Sell" and pos["Shares"] > 0:
             current_wac_native = pos["Total_Cost_Native"] / pos["Shares"]
@@ -349,7 +340,6 @@ def calculate_weighted_positions(df_tx, ticker_map):
     ]
 
     return pd.DataFrame(active_list), pd.DataFrame(realized_trades)
-
 
 def enrich_with_live_prices(active_df):
     if active_df.empty:
@@ -468,7 +458,6 @@ def enrich_with_live_prices(active_df):
 
     return pd.DataFrame(enriched), eur_huf_rate
 
-
 def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
     if enriched_df.empty:
         return pd.DataFrame()
@@ -485,6 +474,7 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
         pnl_huf = mkt_val_huf - total_cost_huf
         pnl_pct = (pnl_huf / total_cost_huf * 100.0) if total_cost_huf > 0 else 0.0
         
+        # Safe division for average cost calculation
         avg_cost_native = total_cost_native / total_shares if total_shares > 0 else 0.0
 
         weight_pct = (mkt_val_huf / total_nav_huf * 100.0) if total_nav_huf > 0 else 0.0
@@ -518,7 +508,6 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
     if not df_res.empty:
         df_res = df_res.sort_values(by="Weight %", ascending=False)
     return df_res
-
 
 def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", selected_account="All Accounts"):
     tx_filt = df_tx.copy() if not df_tx.empty else pd.DataFrame()
@@ -589,7 +578,6 @@ def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", se
         "Net Return %": net_return_pct,
         "Annualized XIRR %": annualized_xirr,
     }
-
 
 def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
     if df_tx.empty:
