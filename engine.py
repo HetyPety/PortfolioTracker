@@ -11,7 +11,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SUPPORTED_CURRENCIES = {
     "HUF", "EUR", "USD", "GBP", "CHF", "DKK", "NOK", "SEK",
-    "PLN", "CZK", "RON", "CAD", "AUD", "JPY", "SGD", "GBPX",
+    "PLN", "CZK", "RON", "ILS", "CAD", "AUD", "JPY", "SGD", "GBPX",
     "GBX", "GBp",
 }
 
