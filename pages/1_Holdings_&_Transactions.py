@@ -17,7 +17,7 @@ DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1npPdS9fw30_pXxLpmjR
 
 SHEET_NAME_OR_URL = st.sidebar.text_input(
     "Google Sheet Name or URL",
-    value="My Portfolio Holdings",
+    value=DEFAULT_SHEET_URL,
 )
 currency_mode = st.sidebar.radio("Display Currency", ["EUR", "HUF"])
 
