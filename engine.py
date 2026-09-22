@@ -247,6 +247,10 @@ def load_and_sync_portfolio(
 
 
 def calculate_weighted_positions(df_tx, ticker_map):
+    """
+    Calculates exact weighted average cost in native transaction currency
+    and HUF simultaneously.
+    """
     if df_tx.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -259,6 +263,7 @@ def calculate_weighted_positions(df_tx, ticker_map):
     ticker_col = find_col_name(df_sorted.columns, ["Symbol", "Ticker"])
     qty_col = find_col_name(df_sorted.columns, ["Quantity", "Shares", "Number", "Qty"])
     curr_col = find_col_name(df_sorted.columns, ["Price Currency", "Currency", "Curr"])
+    net_amt_col = find_col_name(df_sorted.columns, ["Net Amount"])
 
     positions = {}
     realized_trades = []
@@ -275,6 +280,7 @@ def calculate_weighted_positions(df_tx, ticker_map):
         currency = str(row.get(curr_col, "EUR")).strip()
 
         qty = abs(clean_float(row.get(qty_col, 0)))
+        net_native = abs(clean_float(row.get(net_amt_col, 0))) if net_amt_col else 0.0
         net_huf = clean_float(row.get("_Net_Amount_HUF", 0))
         abs_cost_huf = abs(net_huf)
 
@@ -285,6 +291,7 @@ def calculate_weighted_positions(df_tx, ticker_map):
                 "Account": account,
                 "Ticker": ticker,
                 "Shares": 0.0,
+                "Total_Cost_Native": 0.0,
                 "Total_Cost_HUF": 0.0,
                 "Currency": currency,
             }
@@ -293,9 +300,13 @@ def calculate_weighted_positions(df_tx, ticker_map):
 
         if tx_type == "Buy":
             pos["Shares"] += qty
+            pos["Total_Cost_Native"] += net_native
             pos["Total_Cost_HUF"] += abs_cost_huf
         elif tx_type == "Sell" and pos["Shares"] > 0:
+            current_wac_native = pos["Total_Cost_Native"] / pos["Shares"]
             current_wac_huf = pos["Total_Cost_HUF"] / pos["Shares"]
+
+            cost_of_sold_native = qty * current_wac_native
             cost_of_sold_shares_huf = qty * current_wac_huf
             realized_pnl_huf = abs_cost_huf - cost_of_sold_shares_huf
 
@@ -311,9 +322,12 @@ def calculate_weighted_positions(df_tx, ticker_map):
             })
 
             pos["Shares"] -= qty
+            pos["Total_Cost_Native"] -= cost_of_sold_native
             pos["Total_Cost_HUF"] -= cost_of_sold_shares_huf
+
             if pos["Shares"] <= 1e-6:
                 pos["Shares"] = 0.0
+                pos["Total_Cost_Native"] = 0.0
                 pos["Total_Cost_HUF"] = 0.0
 
     active_list = [
@@ -322,6 +336,8 @@ def calculate_weighted_positions(df_tx, ticker_map):
             "Account": pos["Account"],
             "Ticker": pos["Ticker"],
             "Shares": pos["Shares"],
+            "WAC Native": pos["Total_Cost_Native"] / pos["Shares"] if pos["Shares"] > 0 else 0.0,
+            "Total Cost Native": pos["Total_Cost_Native"],
             "WAC HUF": pos["Total_Cost_HUF"] / pos["Shares"] if pos["Shares"] > 0 else 0.0,
             "Total Cost HUF": pos["Total_Cost_HUF"],
             "Currency": pos["Currency"],
@@ -357,6 +373,7 @@ def enrich_with_live_prices(active_df):
     for _, row in active_df.iterrows():
         ticker = row["Ticker"]
         shares = row["Shares"]
+        total_cost_native = row["Total Cost Native"]
         total_cost_huf = row["Total Cost HUF"]
         curr = str(row["Currency"]).strip()
 
@@ -383,7 +400,6 @@ def enrich_with_live_prices(active_df):
                     t.info.get("currentPrice") or t.info.get("regularMarketPrice") or 0
                 )
             
-            # 3-Tier Dividend Yield Fallback Logic
             raw_yield = t.info.get("dividendYield") or t.info.get("trailingAnnualDividendYield")
             if raw_yield is not None and float(raw_yield) > 0:
                 raw_float = float(raw_yield)
@@ -404,7 +420,7 @@ def enrich_with_live_prices(active_df):
             if cal is not None and isinstance(cal, dict) and "Earnings Date" in cal:
                 next_earnings = str(cal["Earnings Date"][0])[:10]
             elif hasattr(cal, "get") and cal.get("Earnings Date") is not None:
-                next_earnings = str(cal.get("Earnings Date")[0])[:10]
+                next_earnings = str(cal.get("Earnings Date"][0])[:10]
 
             raw_ex_div = t.info.get("exDividendDate")
             if raw_ex_div:
@@ -432,6 +448,8 @@ def enrich_with_live_prices(active_df):
             "Account": row["Account"],
             "Ticker": ticker,
             "Shares": shares,
+            "WAC Native": row["WAC Native"],
+            "Total Cost Native": total_cost_native,
             "WAC HUF": row["WAC HUF"],
             "Live Price": live_price,
             "Currency": curr,
@@ -452,7 +470,7 @@ def enrich_with_live_prices(active_df):
 def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
     """
     Consolidates holdings across multiple brokers/accounts into 1 row per ticker.
-    Calculates native average cost and portfolio weight percentage.
+    Calculates true native weighted average cost from transaction history.
     """
     if enriched_df.empty:
         return pd.DataFrame()
@@ -462,23 +480,21 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
     consolidated = []
     for ticker, group in grouped:
         total_shares = group["Shares"].sum()
+        total_cost_native = group["Total Cost Native"].sum()
         total_cost_huf = group["Cost HUF"].sum()
         mkt_val_huf = group["Market Value HUF"].sum()
+        
         pnl_huf = mkt_val_huf - total_cost_huf
         pnl_pct = (pnl_huf / total_cost_huf * 100.0) if total_cost_huf > 0 else 0.0
+        
+        # Exact native weighted average purchase price
+        avg_cost_native = total_cost_native / total_shares if total_shares > 0 else 0.0
+
+        weight_pct = (mkt_val_huf / total_nav_huf * 100.0) if total_nav_huf > 0 else 0.0
 
         first_row = group.iloc[0]
         live_price = first_row["Live Price"]
         curr = first_row["Currency"]
-        
-        # Convert HUF cost basis back into the native price currency
-        rate_to_huf = (mkt_val_huf / (total_shares * live_price)) if (total_shares * live_price) > 0 else 1.0
-        total_cost_native = total_cost_huf / rate_to_huf if rate_to_huf > 0 else total_cost_huf
-        avg_cost_native = total_cost_native / total_shares if total_shares > 0 else 0.0
-
-        # Calculate weight as % of Total Portfolio NAV
-        weight_pct = (mkt_val_huf / total_nav_huf * 100.0) if total_nav_huf > 0 else 0.0
-
         accounts = ", ".join(sorted(group["Account"].unique().tolist()))
         brokers = ", ".join(sorted(group["Broker"].unique().tolist()))
 
