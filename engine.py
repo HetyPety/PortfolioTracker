@@ -258,9 +258,11 @@ def calculate_weighted_positions(df_tx, ticker_map):
             continue
 
         raw_ticker = str(row.get(ticker_col, "")).strip().upper()
-        # Skip forex trade lines and deposits explicitly
-        if not raw_ticker or "." in raw_ticker or raw_ticker == "-": 
-             continue
+        
+        # 🚨 FIX: Allow stocks with dots (e.g. BCHN.SW, WIE.VI). 
+        # Skip only explicitly empty tickers, dashes, or obvious Forex pairs (.HUF, .EUR)
+        if not raw_ticker or raw_ticker == "-" or raw_ticker.endswith(".HUF") or raw_ticker.endswith(".EUR"):
+            continue
         
         ticker = ticker_map.get(raw_ticker, raw_ticker)
 
@@ -474,7 +476,7 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
         pnl_huf = mkt_val_huf - total_cost_huf
         pnl_pct = (pnl_huf / total_cost_huf * 100.0) if total_cost_huf > 0 else 0.0
         
-        # Safe division for average cost calculation
+        # Safe division for exact native average cost calculation
         avg_cost_native = total_cost_native / total_shares if total_shares > 0 else 0.0
 
         weight_pct = (mkt_val_huf / total_nav_huf * 100.0) if total_nav_huf > 0 else 0.0
