@@ -56,7 +56,8 @@ curr_sym = "€" if currency_mode == "EUR" else ""
 curr_suffix = "" if currency_mode == "EUR" else " HUF"
 fx_factor = eur_huf_rate if currency_mode == "EUR" else 1.0
 
-gt1, gt2, gt3, gt4, gt5 = st.columns(5)
+gt1, gt2, gt3, gt4, gt5, gt6 = st.columns(6)
+
 gt1.metric(
     "Total Portfolio NAV",
     f"{curr_sym}{grand_total_stats['Total NAV HUF'] / fx_factor:,.0f}{curr_suffix}"
@@ -64,24 +65,30 @@ gt1.metric(
     else f"{curr_sym}{grand_total_stats['Total NAV HUF'] / fx_factor:,.2f}"
 )
 gt2.metric(
+    "Total Deposits",
+    f"{curr_sym}{grand_total_stats['Deposits HUF'] / fx_factor:,.0f}{curr_suffix}"
+    if currency_mode == "HUF"
+    else f"{curr_sym}{grand_total_stats['Deposits HUF'] / fx_factor:,.2f}"
+)
+gt3.metric(
     "Total Cash Balance",
     f"{curr_sym}{grand_total_stats['Cash Balance HUF'] / fx_factor:,.0f}{curr_suffix}"
     if currency_mode == "HUF"
     else f"{curr_sym}{grand_total_stats['Cash Balance HUF'] / fx_factor:,.2f}"
 )
-gt3.metric(
+gt4.metric(
     "Total Portfolio Return",
     f"{curr_sym}{grand_total_stats['Net Gain HUF'] / fx_factor:,.0f}{curr_suffix}"
     if currency_mode == "HUF"
     else f"{curr_sym}{grand_total_stats['Net Gain HUF'] / fx_factor:,.2f}",
     f"{grand_total_stats['Net Return %']:+.2f}%",
 )
-gt4.metric(
+gt5.metric(
     "Total Portfolio XIRR",
     f"{grand_total_stats['Annualized XIRR %']:+.2f}%",
     "Money-Weighted Rate"
 )
-gt5.metric("Live EUR/HUF Rate", f"{eur_huf_rate:.2f} HUF")
+gt6.metric("Live EUR/HUF Rate", f"{eur_huf_rate:.2f} HUF")
 
 st.divider()
 
@@ -93,7 +100,7 @@ st.subheader("🏛️ Account-Level Breakdown")
 df_breakdown = get_breakdown_summary(df_tx, enriched_df, eur_huf_rate)
 
 if not df_breakdown.empty:
-    # Render Individual Account Cards
+    # Render Individual Account Cards with Deposits
     for idx, row in df_breakdown.iterrows():
         broker_name = row["Broker"]
         account_name = row["Account"]
@@ -104,7 +111,7 @@ if not df_breakdown.empty:
 
         with st.container():
             st.markdown(f"#### 🏦 **{broker_name}** — *{account_name}*")
-            ac1, ac2, ac3, ac4 = st.columns(4)
+            ac1, ac2, ac3, ac4, ac5 = st.columns(5)
 
             ac1.metric(
                 "Account NAV",
@@ -113,19 +120,25 @@ if not df_breakdown.empty:
                 else f"{curr_sym}{account_stats['Total NAV HUF'] / fx_factor:,.2f}"
             )
             ac2.metric(
+                "Deposits",
+                f"{curr_sym}{account_stats['Deposits HUF'] / fx_factor:,.0f}{curr_suffix}"
+                if currency_mode == "HUF"
+                else f"{curr_sym}{account_stats['Deposits HUF'] / fx_factor:,.2f}"
+            )
+            ac3.metric(
                 "Uninvested Cash",
                 f"{curr_sym}{account_stats['Cash Balance HUF'] / fx_factor:,.0f}{curr_suffix}"
                 if currency_mode == "HUF"
                 else f"{curr_sym}{account_stats['Cash Balance HUF'] / fx_factor:,.2f}"
             )
-            ac3.metric(
+            ac4.metric(
                 "Account Return",
                 f"{curr_sym}{account_stats['Net Gain HUF'] / fx_factor:,.0f}{curr_suffix}"
                 if currency_mode == "HUF"
                 else f"{curr_sym}{account_stats['Net Gain HUF'] / fx_factor:,.2f}",
                 f"{account_stats['Net Return %']:+.2f}%",
             )
-            ac4.metric(
+            ac5.metric(
                 "Account XIRR",
                 f"{account_stats['Annualized XIRR %']:+.2f}%"
             )
