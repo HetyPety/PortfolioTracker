@@ -18,6 +18,8 @@ st.set_page_config(
 
 st.title("🌐 Portfolio Executive Dashboard")
 
+DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1npPdS9fw30_pXxLpmjRYySjLm-KY-OgxSkE0tICxV7E/edit?gid=813187064#gid=813187064"
+
 SHEET_NAME_OR_URL = st.sidebar.text_input(
     "Google Sheet Name or URL",
     value="My Portfolio Holdings",
