@@ -382,8 +382,24 @@ def enrich_with_live_prices(active_df):
                 live_price = float(
                     t.info.get("currentPrice") or t.info.get("regularMarketPrice") or 0
                 )
-            div_yield = float(t.info.get("dividendYield") or 0.0) * 100.0
             
+            # 3-Tier Dividend Yield Fallback Logic
+            raw_yield = t.info.get("dividendYield") or t.info.get("trailingAnnualDividendYield")
+            if raw_yield is not None and float(raw_yield) > 0:
+                raw_float = float(raw_yield)
+                div_yield = raw_float * 100.0 if raw_float < 1.0 else raw_float
+            else:
+                try:
+                    divs = t.dividends
+                    if divs is not None and not divs.empty:
+                        cutoff = pd.Timestamp.now(tz=divs.index.tz) - pd.DateOffset(years=1)
+                        ttm_divs = divs[divs.index >= cutoff]
+                        if not ttm_divs.empty and live_price > 0:
+                            div_sum = float(ttm_divs.sum())
+                            div_yield = (div_sum / live_price) * 100.0
+                except Exception:
+                    pass
+
             cal = t.calendar
             if cal is not None and isinstance(cal, dict) and "Earnings Date" in cal:
                 next_earnings = str(cal["Earnings Date"][0])[:10]
@@ -433,9 +449,10 @@ def enrich_with_live_prices(active_df):
     return pd.DataFrame(enriched), eur_huf_rate
 
 
-def get_consolidated_holdings(enriched_df, eur_huf_rate=400.0):
+def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
     """
     Consolidates holdings across multiple brokers/accounts into 1 row per ticker.
+    Calculates native average cost and portfolio weight percentage.
     """
     if enriched_df.empty:
         return pd.DataFrame()
@@ -449,14 +466,22 @@ def get_consolidated_holdings(enriched_df, eur_huf_rate=400.0):
         mkt_val_huf = group["Market Value HUF"].sum()
         pnl_huf = mkt_val_huf - total_cost_huf
         pnl_pct = (pnl_huf / total_cost_huf * 100.0) if total_cost_huf > 0 else 0.0
-        wac_huf = total_cost_huf / total_shares if total_shares > 0 else 0.0
-
-        brokers = ", ".join(sorted(group["Broker"].unique().tolist()))
-        accounts = ", ".join(sorted(group["Account"].unique().tolist()))
 
         first_row = group.iloc[0]
         live_price = first_row["Live Price"]
         curr = first_row["Currency"]
+        
+        # Convert HUF cost basis back into the native price currency
+        rate_to_huf = (mkt_val_huf / (total_shares * live_price)) if (total_shares * live_price) > 0 else 1.0
+        total_cost_native = total_cost_huf / rate_to_huf if rate_to_huf > 0 else total_cost_huf
+        avg_cost_native = total_cost_native / total_shares if total_shares > 0 else 0.0
+
+        # Calculate weight as % of Total Portfolio NAV
+        weight_pct = (mkt_val_huf / total_nav_huf * 100.0) if total_nav_huf > 0 else 0.0
+
+        accounts = ", ".join(sorted(group["Account"].unique().tolist()))
+        brokers = ", ".join(sorted(group["Broker"].unique().tolist()))
+
         div_yield = first_row["Div Yield %"]
         next_earnings = first_row["Next Earnings"]
         ex_div_date = first_row.get("Next Ex-Div Date", "N/A")
@@ -466,23 +491,20 @@ def get_consolidated_holdings(enriched_df, eur_huf_rate=400.0):
             "Total Shares": total_shares,
             "Live Price": live_price,
             "Currency": curr,
-            "Avg Cost HUF": wac_huf,
-            "Total Cost HUF": total_cost_huf,
-            "Market Value HUF": mkt_val_huf,
-            "PnL HUF": pnl_huf,
+            "Avg Cost": avg_cost_native,
             "PnL %": pnl_pct,
-            "Avg Cost EUR": wac_huf / eur_huf_rate,
-            "Total Cost EUR": total_cost_huf / eur_huf_rate,
-            "Market Value EUR": mkt_val_huf / eur_huf_rate,
-            "PnL EUR": pnl_huf / eur_huf_rate,
-            "Expected Div Yield %": div_yield,
+            "Weight %": weight_pct,
+            "Div Yield %": div_yield,
             "Next Earnings": next_earnings,
             "Next Ex-Div Date": ex_div_date,
-            "Brokers": brokers,
             "Accounts": accounts,
+            "Brokers": brokers,
         })
 
-    return pd.DataFrame(consolidated)
+    df_res = pd.DataFrame(consolidated)
+    if not df_res.empty:
+        df_res = df_res.sort_values(by="Weight %", ascending=False)
+    return df_res
 
 
 def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", selected_account="All Accounts"):
