@@ -1,13 +1,7 @@
 import traceback
 import pandas as pd
 import streamlit as st
-from engine import (
-    calculate_cash_and_nav,
-    calculate_weighted_positions,
-    enrich_with_live_prices,
-    get_consolidated_holdings,
-    load_and_sync_portfolio,
-)
+import engine
 
 st.set_page_config(
     page_title="Holdings & Transactions", page_icon="🔍", layout="wide"
@@ -34,13 +28,13 @@ if not SHEET_NAME_OR_URL:
 
 with st.spinner("Fetching portfolio data and live market prices..."):
     try:
-        df_tx, ticker_map = load_and_sync_portfolio(
+        df_tx, ticker_map, tax_map = engine.load_and_sync_portfolio(
             SHEET_NAME_OR_URL, force_resync=True
         )
-        active_df, realized_df = calculate_weighted_positions(df_tx, ticker_map)
-        enriched_df, eur_huf_rate = enrich_with_live_prices(active_df)
+        active_df, realized_df = engine.calculate_weighted_positions(df_tx, ticker_map)
+        enriched_df, eur_huf_rate = engine.enrich_with_live_prices(active_df, tax_map=tax_map)
         
-        grand_total_stats = calculate_cash_and_nav(df_tx, enriched_df, "All Brokers", "All Accounts")
+        grand_total_stats = engine.calculate_cash_and_nav(df_tx, enriched_df, "All Brokers", "All Accounts")
         total_nav_huf = grand_total_stats["Total NAV HUF"]
     except Exception as e:
         st.error(f"Error loading portfolio: {e}")
@@ -75,7 +69,7 @@ tab_holdings, tab_closed, tab_divs, tab_txs = st.tabs([
 with tab_holdings:
     if not display_df.empty:
         st.markdown("### 📊 Consolidated Company Holdings")
-        df_consolidated = get_consolidated_holdings(display_df, total_nav_huf=total_nav_huf)
+        df_consolidated = engine.get_consolidated_holdings(display_df, total_nav_huf=total_nav_huf)
 
         if not df_consolidated.empty:
             c_cols = [
@@ -86,7 +80,8 @@ with tab_holdings:
                 "Avg Cost",
                 "PnL %",
                 "Weight %",
-                "Div Yield %",
+                "Net Div Yield %",
+                "Tax Rate %",
                 "Next Earnings",
                 "Next Ex-Div Date",
                 "Accounts",
@@ -99,7 +94,8 @@ with tab_holdings:
                     "Avg Cost": "{:,.2f}",
                     "PnL %": "{:+.2f}%",
                     "Weight %": "{:.2f}%",
-                    "Div Yield %": "{:.2f}%",
+                    "Net Div Yield %": "{:.2f}%",
+                    "Tax Rate %": "{:.1f}%",
                 }),
                 use_container_width=True,
                 hide_index=True,
