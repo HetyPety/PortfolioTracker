@@ -560,6 +560,15 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
         net_div_yield = first_row["Div Yield %"]
         gross_div_yield = first_row.get("Gross Div Yield %", net_div_yield)
         tax_pct = first_row.get("Tax Rate %", 0.0)
+
+        # Calculate Net Yield on Cost (YoC)
+        if avg_cost_native > 0 and live_price > 0:
+            net_yoc = net_div_yield * (live_price / avg_cost_native)
+        else:
+            net_yoc = 0.0
+
+        yield_display = f"{net_div_yield:.2f}% - {net_yoc:.2f}%"
+
         next_earnings = first_row["Next Earnings"]
         ex_div_date = first_row.get("Next Ex-Div Date", "N/A")
 
@@ -571,7 +580,9 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
             "Avg Cost": avg_cost_native,
             "PnL %": pnl_pct_native,
             "Weight %": weight_pct,
+            "Net Div Yield % (Live - Cost)": yield_display,
             "Net Div Yield %": net_div_yield,
+            "Net YoC %": net_yoc,
             "Gross Div Yield %": gross_div_yield,
             "Tax Rate %": tax_pct,
             "Next Earnings": next_earnings,
@@ -600,7 +611,7 @@ def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", se
         if account_col:
             tx_filt = tx_filt[tx_filt[account_col].astype(str).str.strip() == selected_account]
         if not hold_filt.empty:
-            hold_filt = hold_filt[hold_filt["Account"].astype(str).str.strip() == selected_account]
+            hold_filt = hold_filt[hold_filt[account_col].astype(str).str.strip() == selected_account]
 
     total_deposits_huf = 0.0
     cash_balance_huf = 0.0
