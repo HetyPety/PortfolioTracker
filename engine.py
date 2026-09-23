@@ -82,8 +82,11 @@ def validate_and_parse_currency(currency_str: str):
 
     if raw_curr == "HUF":
         return "HUF", False
-    elif raw_curr in ["GBPX", "GBX"] or raw_curr == "GBP":
-        return "GBP", True
+    elif raw_curr in ["GBPX", "GBX", "GBP"]:
+        if raw_curr == "GBP":
+            return "GBP", False
+        else:
+            return "GBP", True
     elif raw_curr in SUPPORTED_CURRENCIES:
         return raw_curr, False
     else:
@@ -253,13 +256,11 @@ def calculate_weighted_positions(df_tx, ticker_map):
     for _, row in df_sorted.iterrows():
         tx_type = str(row.get(type_col, "")).strip().title()
         
-        # Only process "Buy" or "Sell" transaction types
         if tx_type not in ["Buy", "Sell"]:
             continue
 
         raw_ticker = str(row.get(ticker_col, "")).strip().upper()
         
-        # Skip explicitly empty tickers, dashes, or Forex pairs (.HUF, .EUR)
         if not raw_ticker or raw_ticker == "-" or raw_ticker.endswith(".HUF") or raw_ticker.endswith(".EUR"):
             continue
         
@@ -272,7 +273,6 @@ def calculate_weighted_positions(df_tx, ticker_map):
         qty = abs(clean_float(row.get(qty_col, 0)))
         unit_price = abs(clean_float(row.get(price_col, 0))) if price_col else 0.0
         
-        # Total cost natively spent
         native_amount = qty * unit_price
         
         net_huf = clean_float(row.get("_Net_Amount_HUF", 0))
@@ -383,15 +383,15 @@ def enrich_with_live_prices(active_df):
         except Exception:
             pass
 
+        # Convert pence live price from yfinance to Pounds when currency is GBP
+        if live_price > 0 and not is_pence and (ticker.endswith(".L") or currency_code == "GBP"):
+            live_price = live_price / 100.0
+
         div_yield = 0.0
         next_earnings = "N/A"
         ex_div_date = "N/A"
         try:
             t = yf.Ticker(ticker)
-            if live_price == 0.0:
-                live_price = float(
-                    t.info.get("currentPrice") or t.info.get("regularMarketPrice") or 0
-                )
             
             raw_yield = t.info.get("dividendYield") or t.info.get("trailingAnnualDividendYield")
             if raw_yield is not None and float(raw_yield) > 0:
@@ -475,13 +475,8 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
         live_price = first_row["Live Price"]
         curr = first_row["Currency"]
 
-        # Exact native weighted average cost
         avg_cost_native = total_cost_native / total_shares if total_shares > 0 else 0.0
-
-        # Native PnL % calculated strictly in the holding's quote currency
         pnl_pct_native = ((live_price - avg_cost_native) / avg_cost_native * 100.0) if avg_cost_native > 0 else 0.0
-
-        # Portfolio weight % in HUF
         weight_pct = (mkt_val_huf / total_nav_huf * 100.0) if total_nav_huf > 0 else 0.0
 
         accounts = ", ".join(sorted(group["Account"].unique().tolist()))
