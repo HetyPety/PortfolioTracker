@@ -15,6 +15,23 @@ SUPPORTED_CURRENCIES = {
     "GBX", "GBp", "ILS",
 }
 
+COUNTRY_NAME_TO_CODE = {
+    "UNITED STATES": "US", "UNITED KINGDOM": "GB", "GERMANY": "DE",
+    "AUSTRIA": "AT", "FINLAND": "FI", "SPAIN": "ES", "SWITZERLAND": "CH",
+    "ITALY": "IT", "FRANCE": "FR", "DENMARK": "DK", "NETHERLANDS": "NL",
+    "NEW ZEALAND": "NZ", "PORTUGAL": "PT", "SWEDEN": "SE", "NORWAY": "NO",
+    "POLAND": "PL", "CZECHIA": "CZ", "CZECH REPUBLIC": "CZ",
+    "AUSTRALIA": "AU", "CANADA": "CA", "JAPAN": "JP", "BELGIUM": "BE",
+    "IRELAND": "IE", "LUXEMBOURG": "LU", "HUNGARY": "HU",
+}
+
+SUFFIX_TO_CODE = {
+    ".VI": "AT", ".DE": "DE", ".F": "DE", ".HE": "FI", ".MC": "ES",
+    ".SW": "CH", ".MI": "IT", ".PA": "FR", ".CO": "DK", ".AS": "NL",
+    ".NZ": "NZ", ".LS": "PT", ".ST": "SE", ".OL": "NO", ".L": "GB",
+}
+
+
 def clean_float(val, default: float = 0.0) -> float:
     if val is None or pd.isna(val):
         return default
@@ -46,6 +63,7 @@ def clean_float(val, default: float = 0.0) -> float:
     except ValueError:
         return default
 
+
 def parse_date_string(date_val) -> datetime:
     if isinstance(date_val, (datetime, pd.Timestamp)):
         return datetime(date_val.year, date_val.month, date_val.day)
@@ -68,6 +86,7 @@ def parse_date_string(date_val) -> datetime:
 
     return pd.to_datetime(date_val, dayfirst=True).to_pydatetime()
 
+
 def validate_and_parse_currency(currency_str: str):
     raw_curr = (
         str(currency_str)
@@ -83,14 +102,12 @@ def validate_and_parse_currency(currency_str: str):
     if raw_curr == "HUF":
         return "HUF", False
     elif raw_curr in ["GBPX", "GBX", "GBP"]:
-        if raw_curr == "GBP":
-            return "GBP", False
-        else:
-            return "GBP", True
+        return ("GBP", False) if raw_curr == "GBP" else ("GBP", True)
     elif raw_curr in SUPPORTED_CURRENCIES:
         return raw_curr, False
     else:
         return raw_curr, False
+
 
 def find_col_name(df_columns, possible_names, fallback_idx: int = -1) -> str:
     col_map = {str(c).strip().lower(): str(c) for c in df_columns}
@@ -101,6 +118,20 @@ def find_col_name(df_columns, possible_names, fallback_idx: int = -1) -> str:
     if 0 <= fallback_idx < len(df_columns):
         return str(df_columns[fallback_idx])
     return ""
+
+
+def detect_country_code(ticker: str, ticker_info=None) -> str:
+    if ticker_info and isinstance(ticker_info, dict):
+        country_name = str(ticker_info.get("country", "")).strip().upper()
+        if country_name in COUNTRY_NAME_TO_CODE:
+            return COUNTRY_NAME_TO_CODE[country_name]
+
+    for suffix, code in SUFFIX_TO_CODE.items():
+        if ticker.endswith(suffix):
+            return code
+
+    return "US"
+
 
 def calculate_xirr(cash_flows, dates, estimate: float = 0.1) -> float:
     if not cash_flows or len(cash_flows) < 2 or sum(1 for c in cash_flows if c < 0) == 0:
@@ -132,6 +163,7 @@ def calculate_xirr(cash_flows, dates, estimate: float = 0.1) -> float:
         r = r_next
 
     return 0.0
+
 
 def get_live_fx_rate_to_huf(currency_code: str, is_pence: bool, eur_huf_rate: float) -> float:
     if currency_code == "HUF":
@@ -167,6 +199,7 @@ def get_live_fx_rate_to_huf(currency_code: str, is_pence: bool, eur_huf_rate: fl
 
     return 1.0
 
+
 def get_gspread_client(json_credentials_path: str = "credentials.json"):
     if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
@@ -175,6 +208,7 @@ def get_gspread_client(json_credentials_path: str = "credentials.json"):
         return gspread.service_account(filename=json_credentials_path)
         
     raise FileNotFoundError("Google credentials not found in Streamlit Secrets or local credentials.json file!")
+
 
 def load_and_sync_portfolio(
     sheet_name_or_url: str,
@@ -197,6 +231,32 @@ def load_and_sync_portfolio(
             yf_sym = str(r.get("YFinance_Ticker", "") or r.get("YFinance", "") or r.get("Ticker", "")).strip()
             if ibkr_sym and yf_sym:
                 ticker_map[ibkr_sym] = yf_sym
+    except Exception:
+        pass
+
+    tax_map = {}
+    try:
+        ws_tax = sh.worksheet("Tax")
+        tax_rows = ws_tax.get_all_records()
+        for r in tax_rows:
+            country_code = str(
+                r.get("Country", "") or r.get("Orszag", "") or r.get("Country Code", "")
+            ).strip().upper()
+            tax_val_raw = (
+                r.get("Withholding Tax", "")
+                or r.get("Tax", "")
+                or r.get("Tax %", "")
+                or r.get("Withholding Tax %", "")
+            )
+            if country_code:
+                tax_rate = clean_float(tax_val_raw)
+                if tax_rate > 1.0:
+                    tax_rate = tax_rate / 100.0
+                tax_map[country_code] = tax_rate
+                if country_code == "UK":
+                    tax_map["GB"] = tax_rate
+                elif country_code == "GB":
+                    tax_map["UK"] = tax_rate
     except Exception:
         pass
 
@@ -233,7 +293,8 @@ def load_and_sync_portfolio(
         df_tx["_Net_Amount_HUF"] = processed_huf_amounts
         df_tx["Broker"] = processed_brokers
 
-    return df_tx, ticker_map
+    return df_tx, ticker_map, tax_map
+
 
 def calculate_weighted_positions(df_tx, ticker_map):
     if df_tx.empty:
@@ -342,7 +403,11 @@ def calculate_weighted_positions(df_tx, ticker_map):
 
     return pd.DataFrame(active_list), pd.DataFrame(realized_trades)
 
-def enrich_with_live_prices(active_df):
+
+def enrich_with_live_prices(active_df, tax_map=None):
+    if tax_map is None:
+        tax_map = {}
+
     if active_df.empty:
         return active_df, 400.0
 
@@ -383,20 +448,21 @@ def enrich_with_live_prices(active_df):
         except Exception:
             pass
 
-        # Convert pence live price from yfinance to Pounds when currency is GBP
         if live_price > 0 and not is_pence and (ticker.endswith(".L") or currency_code == "GBP"):
             live_price = live_price / 100.0
 
-        div_yield = 0.0
+        gross_div_yield = 0.0
         next_earnings = "N/A"
         ex_div_date = "N/A"
+        t_info = {}
         try:
             t = yf.Ticker(ticker)
-            
-            raw_yield = t.info.get("dividendYield") or t.info.get("trailingAnnualDividendYield")
+            t_info = t.info or {}
+
+            raw_yield = t_info.get("dividendYield") or t_info.get("trailingAnnualDividendYield")
             if raw_yield is not None and float(raw_yield) > 0:
                 raw_float = float(raw_yield)
-                div_yield = raw_float * 100.0 if raw_float < 1.0 else raw_float
+                gross_div_yield = raw_float * 100.0 if raw_float < 1.0 else raw_float
             else:
                 try:
                     divs = t.dividends
@@ -405,7 +471,7 @@ def enrich_with_live_prices(active_df):
                         ttm_divs = divs[divs.index >= cutoff]
                         if not ttm_divs.empty and live_price > 0:
                             div_sum = float(ttm_divs.sum())
-                            div_yield = (div_sum / live_price) * 100.0
+                            gross_div_yield = (div_sum / live_price) * 100.0
                 except Exception:
                     pass
 
@@ -415,7 +481,7 @@ def enrich_with_live_prices(active_df):
             elif hasattr(cal, "get") and cal.get("Earnings Date") is not None:
                 next_earnings = str(cal.get("Earnings Date")[0])[:10]
 
-            raw_ex_div = t.info.get("exDividendDate")
+            raw_ex_div = t_info.get("exDividendDate")
             if raw_ex_div:
                 if isinstance(raw_ex_div, (int, float)):
                     ex_div_date = datetime.fromtimestamp(raw_ex_div).strftime("%Y-%m-%d")
@@ -425,6 +491,11 @@ def enrich_with_live_prices(active_df):
                 ex_div_date = str(cal["Ex-Dividend Date"][0])[:10]
         except Exception:
             pass
+
+        country_code = detect_country_code(ticker, t_info)
+        w_tax_rate = tax_map.get(country_code, tax_map.get("UK" if country_code == "GB" else country_code, 0.0))
+        net_div_yield = gross_div_yield * (1.0 - w_tax_rate)
+        tax_pct = w_tax_rate * 100.0
 
         cache_key = (currency_code, is_pence)
         if cache_key not in fx_cache:
@@ -452,12 +523,16 @@ def enrich_with_live_prices(active_df):
             "PnL %": pnl_pct,
             "Market Value EUR": mkt_val_huf / eur_huf_rate,
             "PnL EUR": pnl_huf / eur_huf_rate,
-            "Div Yield %": div_yield,
+            "Div Yield %": net_div_yield,
+            "Gross Div Yield %": gross_div_yield,
+            "Tax Rate %": tax_pct,
+            "Country": country_code,
             "Next Earnings": next_earnings,
             "Next Ex-Div Date": ex_div_date,
         })
 
     return pd.DataFrame(enriched), eur_huf_rate
+
 
 def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
     if enriched_df.empty:
@@ -482,7 +557,9 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
         accounts = ", ".join(sorted(group["Account"].unique().tolist()))
         brokers = ", ".join(sorted(group["Broker"].unique().tolist()))
 
-        div_yield = first_row["Div Yield %"]
+        net_div_yield = first_row["Div Yield %"]
+        gross_div_yield = first_row.get("Gross Div Yield %", net_div_yield)
+        tax_pct = first_row.get("Tax Rate %", 0.0)
         next_earnings = first_row["Next Earnings"]
         ex_div_date = first_row.get("Next Ex-Div Date", "N/A")
 
@@ -494,7 +571,9 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
             "Avg Cost": avg_cost_native,
             "PnL %": pnl_pct_native,
             "Weight %": weight_pct,
-            "Div Yield %": div_yield,
+            "Net Div Yield %": net_div_yield,
+            "Gross Div Yield %": gross_div_yield,
+            "Tax Rate %": tax_pct,
             "Next Earnings": next_earnings,
             "Next Ex-Div Date": ex_div_date,
             "Accounts": accounts,
@@ -505,6 +584,7 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
     if not df_res.empty:
         df_res = df_res.sort_values(by="Weight %", ascending=False)
     return df_res
+
 
 def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", selected_account="All Accounts"):
     tx_filt = df_tx.copy() if not df_tx.empty else pd.DataFrame()
@@ -575,6 +655,7 @@ def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", se
         "Net Return %": net_return_pct,
         "Annualized XIRR %": annualized_xirr,
     }
+
 
 def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
     if df_tx.empty:
