@@ -31,11 +31,11 @@ if not SHEET_NAME_OR_URL:
 
 with st.spinner("Fetching portfolio data and live market prices..."):
     try:
-        df_tx, ticker_map = engine.load_and_sync_portfolio(
+        df_tx, ticker_map, tax_map = engine.load_and_sync_portfolio(
             SHEET_NAME_OR_URL, force_resync=True
         )
         active_df, realized_df = engine.calculate_weighted_positions(df_tx, ticker_map)
-        enriched_df, eur_huf_rate = engine.enrich_with_live_prices(active_df)
+        enriched_df, eur_huf_rate = engine.enrich_with_live_prices(active_df, tax_map=tax_map)
     except Exception as e:
         st.error(f"Error loading portfolio: {e}")
         st.code(traceback.format_exc(), language="text")
