@@ -561,7 +561,6 @@ def get_consolidated_holdings(enriched_df, total_nav_huf=0.0):
         gross_div_yield = first_row.get("Gross Div Yield %", net_div_yield)
         tax_pct = first_row.get("Tax Rate %", 0.0)
 
-        # Calculate Net Yield on Cost (YoC)
         if avg_cost_native > 0 and live_price > 0:
             net_yoc = net_div_yield * (live_price / avg_cost_native)
         else:
@@ -651,6 +650,8 @@ def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", se
                 ).sum()
             )
 
+    net_div_yield_pct = (expected_div_huf / invested_mkt_val_huf * 100.0) if invested_mkt_val_huf > 0 else 0.0
+
     total_nav_huf = cash_balance_huf + invested_mkt_val_huf
     total_net_gain_huf = total_nav_huf - total_deposits_huf if total_deposits_huf > 0 else total_nav_huf
     net_return_pct = (
@@ -674,6 +675,7 @@ def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", se
         "Net Return %": net_return_pct,
         "Annualized XIRR %": annualized_xirr,
         "Expected Dividend HUF": expected_div_huf,
+        "Expected Net Yield %": net_div_yield_pct,
     }
 
 
@@ -698,6 +700,7 @@ def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
             "Invested Market Value (HUF)": stats["Invested HUF"],
             "Total NAV (HUF)": stats["Total NAV HUF"],
             "Expected Dividend (HUF)": stats["Expected Dividend HUF"],
+            "Expected Net Yield %": stats["Expected Net Yield %"],
             "Net Return %": stats["Net Return %"],
             "Annualized XIRR %": stats["Annualized XIRR %"],
             "Total NAV (EUR)": stats["Total NAV HUF"] / eur_huf_rate,
