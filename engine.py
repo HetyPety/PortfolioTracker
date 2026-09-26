@@ -1,8 +1,12 @@
 import os
 import re
 from datetime import datetime
+from urllib.parse import urljoin, urlparse
+import concurrent.futures
 import gspread
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 import yfinance as yf
 import urllib3
 import streamlit as st
@@ -296,6 +300,32 @@ def load_and_sync_portfolio(
     return df_tx, ticker_map, tax_map
 
 
+def load_ir_url_map(sheet_name_or_url: str, json_credentials_path: str = "credentials.json"):
+    ir_map = {}
+    try:
+        gc = get_gspread_client(json_credentials_path)
+        sh = (
+            gc.open_by_url(sheet_name_or_url)
+            if sheet_name_or_url.startswith("http")
+            else gc.open(sheet_name_or_url)
+        )
+        ws_map = sh.worksheet("Ticker_Mapping")
+        map_rows = ws_map.get_all_records()
+        for r in map_rows:
+            yf_sym = str(r.get("YFinance_Ticker", "") or r.get("YFinance", "") or r.get("Ticker", "")).strip()
+            ibkr_sym = str(r.get("IBKR_Symbol", "") or r.get("Symbol", "")).strip().upper()
+            ir_url = str(r.get("IR_Page_Url", "") or r.get("IR_Url", "") or r.get("IR_Page", "") or r.get("IR Page", "")).strip()
+            
+            if ir_url:
+                if yf_sym:
+                    ir_map[yf_sym] = ir_url
+                if ibkr_sym:
+                    ir_map[ibkr_sym] = ir_url
+    except Exception:
+        pass
+    return ir_map
+
+
 def calculate_weighted_positions(df_tx, ticker_map):
     if df_tx.empty:
         return pd.DataFrame(), pd.DataFrame()
@@ -479,7 +509,7 @@ def enrich_with_live_prices(active_df, tax_map=None):
             if cal is not None and isinstance(cal, dict) and "Earnings Date" in cal:
                 next_earnings = str(cal["Earnings Date"][0])[:10]
             elif hasattr(cal, "get") and cal.get("Earnings Date") is not None:
-                next_earnings = str(cal.get("Earnings Date")[0])[:10]
+                next_earnings = str(cal.get("Earnings Date"][0])[:10]
 
             raw_ex_div = t_info.get("exDividendDate")
             if raw_ex_div:
@@ -708,3 +738,89 @@ def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
         })
 
     return pd.DataFrame(summary_rows)
+
+
+def scrape_official_ir_news(ticker: str, url: str):
+    articles = []
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/115.0.0.0 Safari/537.36"
+        )
+    }
+
+    try:
+        res = requests.get(url, headers=headers, timeout=10, verify=False)
+        if res.status_code != 200:
+            return articles
+
+        soup = BeautifulSoup(res.text, "html.parser")
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc.replace("www.", "")
+
+        anchors = soup.find_all("a", href=True)
+        seen_links = set()
+
+        for a in anchors:
+            title = a.get_text(strip=True)
+            if not title or len(title) < 15:
+                continue
+
+            # Ignore generic navigation text
+            title_lower = title.lower()
+            if any(
+                bad in title_lower
+                for bad in [
+                    "read more", "cookies", "privacy", "contact", "home",
+                    "subscribe", "next", "previous", "download", "pdf",
+                    "search", "menu", "login", "register"
+                ]
+            ):
+                continue
+
+            href = a["href"].strip()
+            full_link = urljoin(url, href)
+
+            if full_link in seen_links:
+                continue
+            seen_links.add(full_link)
+
+            articles.append({
+                "Ticker": ticker,
+                "Title": title,
+                "Url": full_link,
+                "Domain": domain,
+                "Source": "Official IR",
+            })
+
+            if len(articles) >= 10:
+                break
+    except Exception:
+        pass
+
+    return articles
+
+
+def fetch_portfolio_news(active_tickers, ir_url_map):
+    if not active_tickers:
+        return pd.DataFrame()
+
+    all_articles = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_ticker = {}
+        for ticker in active_tickers:
+            url = ir_url_map.get(ticker, "")
+            if url:
+                future = executor.submit(scrape_official_ir_news, ticker, url)
+                future_to_ticker[future] = ticker
+
+        for future in concurrent.futures.as_completed(future_to_ticker):
+            res = future.result()
+            if res:
+                all_articles.extend(res)
+
+    if not all_articles:
+        return pd.DataFrame()
+
+    return pd.DataFrame(all_articles)
