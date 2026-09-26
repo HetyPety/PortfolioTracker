@@ -72,7 +72,7 @@ with st.spinner("Scraping live official press releases..."):
 
 st.divider()
 
-if not news_df.empty:
+if not news_df.empty and "Date_Obj" in news_df.columns:
     filtered_df = news_df.copy()
 
     if time_filter == "Last 30 Days":
@@ -90,31 +90,32 @@ if not news_df.empty:
     else:
         filtered_df = filtered_df.sort_values(by="Date_Obj", ascending=False)
 
-    st.markdown(f"### 📋 Official Press Releases ({len(filtered_df)} shown)")
+    if not filtered_df.empty:
+        st.markdown(f"### 📋 Official Press Releases ({len(filtered_df)} shown)")
 
-    for idx, row in filtered_df.iterrows():
-        ticker = row["Ticker"]
-        title = row["Title"]
-        url = row["Url"]
-        domain = row["Domain"]
-        date_str = row["Date_Str"]
-        snippet = row.get("Snippet", "")
+        for idx, row in filtered_df.iterrows():
+            ticker = row["Ticker"]
+            title = row["Title"]
+            url = row["Url"]
+            domain = row["Domain"]
+            date_str = row.get("Date_Str", "Date N/A")
+            snippet = row.get("Snippet", "")
 
-        date_badge = f"📅 **{date_str}**" if date_str != "Date N/A" else "📅 *Date N/A*"
+            date_badge = f"📅 **{date_str}**" if date_str and date_str != "Date N/A" else "📅 *Date N/A*"
 
-        with st.container():
-            col_left, col_right = st.columns([2, 8])
-            with col_left:
-                st.markdown(f"### 🟢 `{ticker}`")
-                st.markdown(date_badge)
-                st.caption(f"🌐 {domain}")
-            with col_right:
-                st.markdown(f"#### [{title}]({url})")
-                if snippet:
-                    st.markdown(f"> *{snippet}*")
-                st.markdown(f"🔗 [Open Official Article on {domain}]({url})")
-            st.divider()
+            with st.container():
+                col_left, col_right = st.columns([2, 8])
+                with col_left:
+                    st.markdown(f"### 🟢 `{ticker}`")
+                    st.markdown(date_badge)
+                    st.caption(f"🌐 {domain}")
+                with col_right:
+                    st.markdown(f"#### [{title}]({url})")
+                    if snippet:
+                        st.markdown(f"> *{snippet}*")
+                    st.markdown(f"🔗 [Open Official Article on {domain}]({url})")
+                st.divider()
+    else:
+        st.info("No official press releases found matching the selected filters.")
 else:
-    st.info(
-        "No official press releases found for the selected options."
-    )
+    st.info("No official press releases found for the selected options.")
