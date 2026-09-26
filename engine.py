@@ -35,6 +35,8 @@ SUFFIX_TO_CODE = {
     ".NZ": "NZ", ".LS": "PT", ".ST": "SE", ".OL": "NO", ".L": "GB",
 }
 
+MONTH_NAMES = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
+
 
 def clean_float(val, default: float = 0.0) -> float:
     if val is None or pd.isna(val):
@@ -509,7 +511,11 @@ def enrich_with_live_prices(active_df, tax_map=None):
             if cal is not None and isinstance(cal, dict) and "Earnings Date" in cal:
                 next_earnings = str(cal["Earnings Date"][0])[:10]
             elif hasattr(cal, "get") and cal.get("Earnings Date") is not None:
-                next_earnings = str(cal.get("Earnings Date")[0])[:10]
+                e_val = cal.get("Earnings Date")
+                if isinstance(e_val, (list, tuple, pd.Series)) and len(e_val) > 0:
+                    next_earnings = str(e_val[0])[:10]
+                else:
+                    next_earnings = str(e_val)[:10]
 
             raw_ex_div = t_info.get("exDividendDate")
             if raw_ex_div:
@@ -740,6 +746,44 @@ def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
     return pd.DataFrame(summary_rows)
 
 
+def extract_date_from_text(text: str):
+    if not text:
+        return None
+
+    # Pattern 1: YYYY-MM-DD or YYYY.MM.DD or YYYY/MM/DD
+    m = re.search(r"\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b", text)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+
+    # Pattern 2: DD-MM-YYYY or DD.MM.YYYY or DD/MM/YYYY
+    m = re.search(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2})\b", text)
+    if m:
+        try:
+            return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+
+    # Pattern 3: DD Month YYYY or Month DD, YYYY
+    m = re.search(rf"\b(\d{{1,2}})\s+({MONTH_NAMES})\s+(20\d{{2}})\b", text, re.IGNORECASE)
+    if m:
+        try:
+            return pd.to_datetime(m.group(0)).to_pydatetime()
+        except Exception:
+            pass
+
+    m = re.search(rf"\b({MONTH_NAMES})\s+(\d{{1,2}}),?\s+(20\d{{2}})\b", text, re.IGNORECASE)
+    if m:
+        try:
+            return pd.to_datetime(m.group(0)).to_pydatetime()
+        except Exception:
+            pass
+
+    return None
+
+
 def scrape_official_ir_news(ticker: str, url: str):
     articles = []
     headers = {
@@ -759,22 +803,28 @@ def scrape_official_ir_news(ticker: str, url: str):
         parsed_url = urlparse(url)
         domain = parsed_url.netloc.replace("www.", "")
 
-        anchors = soup.find_all("a", href=True)
+        containers = soup.find_all(["article", "li", "tr"])
+        if len(containers) < 3:
+            containers = soup.find_all("div")
+
         seen_links = set()
 
-        for a in anchors:
+        for container in containers:
+            a = container.find("a", href=True)
+            if not a:
+                continue
+
             title = a.get_text(strip=True)
             if not title or len(title) < 15:
                 continue
 
-            # Ignore generic navigation text
             title_lower = title.lower()
             if any(
                 bad in title_lower
                 for bad in [
                     "read more", "cookies", "privacy", "contact", "home",
                     "subscribe", "next", "previous", "download", "pdf",
-                    "search", "menu", "login", "register"
+                    "search", "menu", "login", "register", "all news", "press releases"
                 ]
             ):
                 continue
@@ -784,17 +834,38 @@ def scrape_official_ir_news(ticker: str, url: str):
 
             if full_link in seen_links:
                 continue
-            seen_links.add(full_link)
 
+            container_text = container.get_text(" ", strip=True)
+
+            pub_date = None
+            time_tag = container.find("time")
+            if time_tag:
+                dt_str = time_tag.get("datetime") or time_tag.get_text(strip=True)
+                pub_date = extract_date_from_text(dt_str)
+
+            if not pub_date:
+                pub_date = extract_date_from_text(container_text)
+
+            snippet = ""
+            for p in container.find_all(["p", "span"]):
+                stext = p.get_text(strip=True)
+                if len(stext) > 30 and stext != title and not extract_date_from_text(stext):
+                    snippet = stext[:220] + ("..." if len(stext) > 220 else "")
+                    break
+
+            seen_links.add(full_link)
             articles.append({
                 "Ticker": ticker,
                 "Title": title,
                 "Url": full_link,
                 "Domain": domain,
                 "Source": "Official IR",
+                "Date_Obj": pub_date if pub_date else datetime(1970, 1, 1),
+                "Date_Str": pub_date.strftime("%Y-%m-%d") if pub_date else "Date N/A",
+                "Snippet": snippet,
             })
 
-            if len(articles) >= 10:
+            if len(articles) >= 15:
                 break
     except Exception:
         pass
@@ -823,4 +894,7 @@ def fetch_portfolio_news(active_tickers, ir_url_map):
     if not all_articles:
         return pd.DataFrame()
 
-    return pd.DataFrame(all_articles)
+    df_news = pd.DataFrame(all_articles)
+    if "Date_Obj" in df_news.columns:
+        df_news = df_news.sort_values(by="Date_Obj", ascending=False)
+    return df_news
