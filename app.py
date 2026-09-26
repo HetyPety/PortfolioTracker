@@ -52,7 +52,11 @@ curr_sym = "€" if currency_mode == "EUR" else ""
 curr_suffix = "" if currency_mode == "EUR" else " HUF"
 fx_factor = eur_huf_rate if currency_mode == "EUR" else 1.0
 
-gt1, gt2, gt3, gt4, gt5, gt6 = st.columns(6)
+invested_huf = grand_total_stats["Invested HUF"]
+expected_div_huf = grand_total_stats["Expected Dividend HUF"]
+net_port_yield_pct = (expected_div_huf / invested_huf * 100.0) if invested_huf > 0 else 0.0
+
+gt1, gt2, gt3, gt4 = st.columns(4)
 
 gt1.metric(
     "Total Portfolio NAV",
@@ -72,19 +76,29 @@ gt3.metric(
     if currency_mode == "HUF"
     else f"{curr_sym}{grand_total_stats['Cash Balance HUF'] / fx_factor:,.2f}"
 )
-gt4.metric(
+gt4.metric("Live EUR/HUF Rate", f"{eur_huf_rate:.2f} HUF")
+
+gt5, gt6, gt7 = st.columns(3)
+
+gt5.metric(
     "Total Portfolio Return",
     f"{curr_sym}{grand_total_stats['Net Gain HUF'] / fx_factor:,.0f}{curr_suffix}"
     if currency_mode == "HUF"
     else f"{curr_sym}{grand_total_stats['Net Gain HUF'] / fx_factor:,.2f}",
     f"{grand_total_stats['Net Return %']:+.2f}%",
 )
-gt5.metric(
+gt6.metric(
     "Total Portfolio XIRR",
     f"{grand_total_stats['Annualized XIRR %']:+.2f}%",
     "Money-Weighted Rate"
 )
-gt6.metric("Live EUR/HUF Rate", f"{eur_huf_rate:.2f} HUF")
+gt7.metric(
+    "Expected Annual Net Dividend",
+    f"{curr_sym}{expected_div_huf / fx_factor:,.0f}{curr_suffix}"
+    if currency_mode == "HUF"
+    else f"{curr_sym}{expected_div_huf / fx_factor:,.2f}",
+    f"{net_port_yield_pct:.2f}% Net Yield"
+)
 
 st.divider()
 
@@ -104,9 +118,13 @@ if not df_breakdown.empty:
             df_tx, enriched_df, selected_broker=broker_name, selected_account=account_name
         )
 
+        acc_invested_huf = account_stats["Invested HUF"]
+        acc_exp_div_huf = account_stats["Expected Dividend HUF"]
+        acc_net_yield_pct = (acc_exp_div_huf / acc_invested_huf * 100.0) if acc_invested_huf > 0 else 0.0
+
         with st.container():
             st.markdown(f"#### 🏦 **{broker_name}** — *{account_name}*")
-            ac1, ac2, ac3, ac4, ac5 = st.columns(5)
+            ac1, ac2, ac3, ac4, ac5, ac6 = st.columns(6)
 
             ac1.metric(
                 "Account NAV",
@@ -137,19 +155,29 @@ if not df_breakdown.empty:
                 "Account XIRR",
                 f"{account_stats['Annualized XIRR %']:+.2f}%"
             )
+            ac6.metric(
+                "Expected Net Dividend",
+                f"{curr_sym}{acc_exp_div_huf / fx_factor:,.0f}{curr_suffix}"
+                if currency_mode == "HUF"
+                else f"{curr_sym}{acc_exp_div_huf / fx_factor:,.2f}",
+                f"{acc_net_yield_pct:.2f}% Net Yield"
+            )
             st.markdown("---")
 
     with st.expander("📋 View Summary Table Across All Accounts"):
+        cols_to_format = {
+            "Deposits (HUF)": "{:,.0f}",
+            "Cash Balance (HUF)": "{:,.0f}",
+            "Invested Market Value (HUF)": "{:,.0f}",
+            "Total NAV (HUF)": "{:,.0f}",
+            "Expected Dividend (HUF)": "{:,.0f}",
+            "Net Return %": "{:+.2f}%",
+            "Annualized XIRR %": "{:+.2f}%",
+            "Total NAV (EUR)": "€{:,.2f}",
+            "Expected Dividend (EUR)": "€{:,.2f}",
+        }
         st.dataframe(
-            df_breakdown.style.format({
-                "Deposits (HUF)": "{:,.0f}",
-                "Cash Balance (HUF)": "{:,.0f}",
-                "Invested Market Value (HUF)": "{:,.0f}",
-                "Total NAV (HUF)": "{:,.0f}",
-                "Net Return %": "{:+.2f}%",
-                "Annualized XIRR %": "{:+.2f}%",
-                "Total NAV (EUR)": "€{:,.2f}",
-            }),
+            df_breakdown.style.format(cols_to_format),
             use_container_width=True,
             hide_index=True,
         )
