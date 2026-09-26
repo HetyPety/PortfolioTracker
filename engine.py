@@ -36,6 +36,9 @@ SUFFIX_TO_CODE = {
 }
 
 MONTH_NAMES = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
+DEFAULT_NEWS_COLUMNS = [
+    "Ticker", "Title", "Url", "Domain", "Source", "Date_Obj", "Date_Str", "Snippet"
+]
 
 
 def clean_float(val, default: float = 0.0) -> float:
@@ -750,7 +753,6 @@ def extract_date_from_text(text: str):
     if not text:
         return None
 
-    # Pattern 1: YYYY-MM-DD or YYYY.MM.DD or YYYY/MM/DD
     m = re.search(r"\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b", text)
     if m:
         try:
@@ -758,7 +760,6 @@ def extract_date_from_text(text: str):
         except ValueError:
             pass
 
-    # Pattern 2: DD-MM-YYYY or DD.MM.YYYY or DD/MM/YYYY
     m = re.search(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2})\b", text)
     if m:
         try:
@@ -766,7 +767,6 @@ def extract_date_from_text(text: str):
         except ValueError:
             pass
 
-    # Pattern 3: DD Month YYYY or Month DD, YYYY
     m = re.search(rf"\b(\d{{1,2}})\s+({MONTH_NAMES})\s+(20\d{{2}})\b", text, re.IGNORECASE)
     if m:
         try:
@@ -875,7 +875,7 @@ def scrape_official_ir_news(ticker: str, url: str):
 
 def fetch_portfolio_news(active_tickers, ir_url_map):
     if not active_tickers:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=DEFAULT_NEWS_COLUMNS)
 
     all_articles = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -887,14 +887,23 @@ def fetch_portfolio_news(active_tickers, ir_url_map):
                 future_to_ticker[future] = ticker
 
         for future in concurrent.futures.as_completed(future_to_ticker):
-            res = future.result()
-            if res:
-                all_articles.extend(res)
+            try:
+                res = future.result()
+                if res:
+                    all_articles.extend(res)
+            except Exception:
+                pass
 
     if not all_articles:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=DEFAULT_NEWS_COLUMNS)
 
     df_news = pd.DataFrame(all_articles)
+    for col in DEFAULT_NEWS_COLUMNS:
+        if col not in df_news.columns:
+            df_news[col] = None
+
     if "Date_Obj" in df_news.columns:
+        df_news["Date_Obj"] = pd.to_datetime(df_news["Date_Obj"], errors="coerce")
         df_news = df_news.sort_values(by="Date_Obj", ascending=False)
+
     return df_news
