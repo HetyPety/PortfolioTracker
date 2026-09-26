@@ -35,7 +35,6 @@ SUFFIX_TO_CODE = {
     ".NZ": "NZ", ".LS": "PT", ".ST": "SE", ".OL": "NO", ".L": "GB",
 }
 
-MONTH_NAMES = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
 DEFAULT_NEWS_COLUMNS = [
     "Ticker", "Title", "Url", "Domain", "Source", "Date_Obj", "Date_Str", "Snippet"
 ]
@@ -319,7 +318,10 @@ def load_ir_url_map(sheet_name_or_url: str, json_credentials_path: str = "creden
         for r in map_rows:
             yf_sym = str(r.get("YFinance_Ticker", "") or r.get("YFinance", "") or r.get("Ticker", "")).strip()
             ibkr_sym = str(r.get("IBKR_Symbol", "") or r.get("Symbol", "")).strip().upper()
-            ir_url = str(r.get("IR_Page_Url", "") or r.get("IR_Url", "") or r.get("IR_Page", "") or r.get("IR Page", "")).strip()
+            ir_url = str(
+                r.get("IR_RSS_Url", "") or r.get("IR_RSS", "") or r.get("RSS_Url", "") or 
+                r.get("IR_Page_Url", "") or r.get("IR_Url", "") or r.get("IR_Page", "")
+            ).strip()
             
             if ir_url:
                 if yf_sym:
@@ -749,42 +751,7 @@ def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
     return pd.DataFrame(summary_rows)
 
 
-def extract_date_from_text(text: str):
-    if not text:
-        return None
-
-    m = re.search(r"\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b", text)
-    if m:
-        try:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except ValueError:
-            pass
-
-    m = re.search(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2})\b", text)
-    if m:
-        try:
-            return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-        except ValueError:
-            pass
-
-    m = re.search(rf"\b(\d{{1,2}})\s+({MONTH_NAMES})\s+(20\d{{2}})\b", text, re.IGNORECASE)
-    if m:
-        try:
-            return pd.to_datetime(m.group(0)).to_pydatetime()
-        except Exception:
-            pass
-
-    m = re.search(rf"\b({MONTH_NAMES})\s+(\d{{1,2}}),?\s+(20\d{{2}})\b", text, re.IGNORECASE)
-    if m:
-        try:
-            return pd.to_datetime(m.group(0)).to_pydatetime()
-        except Exception:
-            pass
-
-    return None
-
-
-def scrape_official_ir_news(ticker: str, url: str):
+def parse_rss_feed(ticker: str, url: str):
     articles = []
     headers = {
         "User-Agent": (
@@ -799,73 +766,78 @@ def scrape_official_ir_news(ticker: str, url: str):
         if res.status_code != 200:
             return articles
 
-        soup = BeautifulSoup(res.text, "html.parser")
         parsed_url = urlparse(url)
         domain = parsed_url.netloc.replace("www.", "")
 
-        containers = soup.find_all(["article", "li", "tr"])
-        if len(containers) < 3:
-            containers = soup.find_all("div")
+        soup = BeautifulSoup(res.text, "html.parser")
 
-        seen_links = set()
+        items = soup.find_all("item")
+        if not items:
+            items = soup.find_all("entry")
 
-        for container in containers:
-            a = container.find("a", href=True)
-            if not a:
+        for item in items:
+            title_tag = item.find("title")
+            title = title_tag.get_text(strip=True) if title_tag else ""
+            if not title:
                 continue
 
-            title = a.get_text(strip=True)
-            if not title or len(title) < 15:
-                continue
+            link = ""
+            link_tag = item.find("link")
+            if link_tag:
+                if link_tag.get("href"):
+                    link = link_tag.get("href").strip()
+                else:
+                    link = link_tag.get_text(strip=True)
+            if not link:
+                link = url
 
-            title_lower = title.lower()
-            if any(
-                bad in title_lower
-                for bad in [
-                    "read more", "cookies", "privacy", "contact", "home",
-                    "subscribe", "next", "previous", "download", "pdf",
-                    "search", "menu", "login", "register", "all news", "press releases"
-                ]
-            ):
-                continue
-
-            href = a["href"].strip()
-            full_link = urljoin(url, href)
-
-            if full_link in seen_links:
-                continue
-
-            container_text = container.get_text(" ", strip=True)
+            date_str = ""
+            pub_date_tag = (
+                item.find("pubdate") or 
+                item.find("dc:date") or 
+                item.find("published") or 
+                item.find("updated") or 
+                item.find("date")
+            )
+            if pub_date_tag:
+                date_str = pub_date_tag.get_text(strip=True)
 
             pub_date = None
-            time_tag = container.find("time")
-            if time_tag:
-                dt_str = time_tag.get("datetime") or time_tag.get_text(strip=True)
-                pub_date = extract_date_from_text(dt_str)
+            if date_str:
+                try:
+                    pub_date = pd.to_datetime(date_str, errors="coerce").to_pydatetime()
+                except Exception:
+                    pub_date = None
 
-            if not pub_date:
-                pub_date = extract_date_from_text(container_text)
-
+            desc_tag = item.find("description") or item.find("summary") or item.find("content")
             snippet = ""
-            for p in container.find_all(["p", "span"]):
-                stext = p.get_text(strip=True)
-                if len(stext) > 30 and stext != title and not extract_date_from_text(stext):
-                    snippet = stext[:220] + ("..." if len(stext) > 220 else "")
-                    break
+            if desc_tag:
+                raw_desc = desc_tag.get_text(strip=True)
+                clean_desc = BeautifulSoup(raw_desc, "html.parser").get_text(" ", strip=True)
+                snippet = clean_desc[:250] + ("..." if len(clean_desc) > 250 else "")
 
-            seen_links.add(full_link)
+            source_name = "Regulatory Wire"
+            if "cision" in domain:
+                source_name = "Cision"
+            elif "eqs" in domain or "dgap" in domain:
+                source_name = "EQS"
+            elif "investegate" in domain or "londonstockexchange" in domain:
+                source_name = "RNS"
+            elif "globenewswire" in domain:
+                source_name = "GlobeNewswire"
+
             articles.append({
                 "Ticker": ticker,
                 "Title": title,
-                "Url": full_link,
+                "Url": link,
                 "Domain": domain,
-                "Source": "Official IR",
-                "Date_Obj": pub_date if pub_date else datetime(1970, 1, 1),
-                "Date_Str": pub_date.strftime("%Y-%m-%d") if pub_date else "Date N/A",
+                "Source": source_name,
+                "Date_Obj": pub_date if pub_date and not pd.isna(pub_date) else datetime(1970, 1, 1),
+                "Date_Str": pub_date.strftime("%Y-%m-%d %H:%M") if pub_date and not pd.isna(pub_date) else "Date N/A",
                 "Snippet": snippet,
             })
 
-            if len(articles) >= 15:
+            if len(articles) >= 20:
                 break
     except Exception:
         pass
@@ -883,7 +855,7 @@ def fetch_portfolio_news(active_tickers, ir_url_map):
         for ticker in active_tickers:
             url = ir_url_map.get(ticker, "")
             if url:
-                future = executor.submit(scrape_official_ir_news, ticker, url)
+                future = executor.submit(parse_rss_feed, ticker, url)
                 future_to_ticker[future] = ticker
 
         for future in concurrent.futures.as_completed(future_to_ticker):
