@@ -640,8 +640,16 @@ def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", se
                     xirr_dates.append(tx_dt)
 
     invested_mkt_val_huf = 0.0
+    expected_div_huf = 0.0
     if not hold_filt.empty and "Market Value HUF" in hold_filt.columns:
         invested_mkt_val_huf = float(hold_filt["Market Value HUF"].apply(clean_float).sum())
+        if "Div Yield %" in hold_filt.columns:
+            expected_div_huf = float(
+                (
+                    hold_filt["Market Value HUF"].apply(clean_float)
+                    * (hold_filt["Div Yield %"].apply(clean_float) / 100.0)
+                ).sum()
+            )
 
     total_nav_huf = cash_balance_huf + invested_mkt_val_huf
     total_net_gain_huf = total_nav_huf - total_deposits_huf if total_deposits_huf > 0 else total_nav_huf
@@ -665,6 +673,7 @@ def calculate_cash_and_nav(df_tx, enriched_df, selected_broker="All Brokers", se
         "Net Gain HUF": total_net_gain_huf,
         "Net Return %": net_return_pct,
         "Annualized XIRR %": annualized_xirr,
+        "Expected Dividend HUF": expected_div_huf,
     }
 
 
@@ -688,9 +697,11 @@ def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
             "Cash Balance (HUF)": stats["Cash Balance HUF"],
             "Invested Market Value (HUF)": stats["Invested HUF"],
             "Total NAV (HUF)": stats["Total NAV HUF"],
+            "Expected Dividend (HUF)": stats["Expected Dividend HUF"],
             "Net Return %": stats["Net Return %"],
             "Annualized XIRR %": stats["Annualized XIRR %"],
             "Total NAV (EUR)": stats["Total NAV HUF"] / eur_huf_rate,
+            "Expected Dividend (EUR)": stats["Expected Dividend HUF"] / eur_huf_rate,
         })
 
     return pd.DataFrame(summary_rows)
