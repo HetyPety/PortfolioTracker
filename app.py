@@ -52,9 +52,14 @@ curr_sym = "€" if currency_mode == "EUR" else ""
 curr_suffix = "" if currency_mode == "EUR" else " HUF"
 fx_factor = eur_huf_rate if currency_mode == "EUR" else 1.0
 
-invested_huf = grand_total_stats["Invested HUF"]
 expected_div_huf = grand_total_stats["Expected Dividend HUF"]
-net_port_yield_pct = (expected_div_huf / invested_huf * 100.0) if invested_huf > 0 else 0.0
+net_port_yield_pct = grand_total_stats["Expected Net Yield %"]
+
+exp_div_str = (
+    f"{curr_sym}{expected_div_huf / fx_factor:,.0f}{curr_suffix} ({net_port_yield_pct:.2f}%)"
+    if currency_mode == "HUF"
+    else f"{curr_sym}{expected_div_huf / fx_factor:,.2f} ({net_port_yield_pct:.2f}%)"
+)
 
 gt1, gt2, gt3, gt4 = st.columns(4)
 
@@ -93,11 +98,9 @@ gt6.metric(
     "Money-Weighted Rate"
 )
 gt7.metric(
-    "Expected Annual Net Dividend",
-    f"{curr_sym}{expected_div_huf / fx_factor:,.0f}{curr_suffix}"
-    if currency_mode == "HUF"
-    else f"{curr_sym}{expected_div_huf / fx_factor:,.2f}",
-    f"{net_port_yield_pct:.2f}% Net Yield"
+    "Expected Net Dividend (Amt & Yield)",
+    exp_div_str,
+    f"{net_port_yield_pct:.2f}% Portfolio Net Yield"
 )
 
 st.divider()
@@ -118,9 +121,14 @@ if not df_breakdown.empty:
             df_tx, enriched_df, selected_broker=broker_name, selected_account=account_name
         )
 
-        acc_invested_huf = account_stats["Invested HUF"]
         acc_exp_div_huf = account_stats["Expected Dividend HUF"]
-        acc_net_yield_pct = (acc_exp_div_huf / acc_invested_huf * 100.0) if acc_invested_huf > 0 else 0.0
+        acc_net_yield_pct = account_stats["Expected Net Yield %"]
+
+        acc_exp_div_str = (
+            f"{curr_sym}{acc_exp_div_huf / fx_factor:,.0f}{curr_suffix} ({acc_net_yield_pct:.2f}%)"
+            if currency_mode == "HUF"
+            else f"{curr_sym}{acc_exp_div_huf / fx_factor:,.2f} ({acc_net_yield_pct:.2f}%)"
+        )
 
         with st.container():
             st.markdown(f"#### 🏦 **{broker_name}** — *{account_name}*")
@@ -157,9 +165,7 @@ if not df_breakdown.empty:
             )
             ac6.metric(
                 "Expected Net Dividend",
-                f"{curr_sym}{acc_exp_div_huf / fx_factor:,.0f}{curr_suffix}"
-                if currency_mode == "HUF"
-                else f"{curr_sym}{acc_exp_div_huf / fx_factor:,.2f}",
+                acc_exp_div_str,
                 f"{acc_net_yield_pct:.2f}% Net Yield"
             )
             st.markdown("---")
@@ -171,6 +177,7 @@ if not df_breakdown.empty:
             "Invested Market Value (HUF)": "{:,.0f}",
             "Total NAV (HUF)": "{:,.0f}",
             "Expected Dividend (HUF)": "{:,.0f}",
+            "Expected Net Yield %": "{:.2f}%",
             "Net Return %": "{:+.2f}%",
             "Annualized XIRR %": "{:+.2f}%",
             "Total NAV (EUR)": "€{:,.2f}",
