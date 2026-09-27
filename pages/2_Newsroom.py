@@ -8,7 +8,7 @@ st.set_page_config(
     page_title="Company Newsroom", page_icon="📰", layout="wide"
 )
 
-st.title("📰 Regulatory & Corporate Newsroom")
+st.title("📰 Portfolio News & Corporate Releases")
 
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1npPdS9fw30_pXxLpmjRYySjLm-KY-OgxSkE0tICxV7E/edit?gid=813187064#gid=813187064"
 
@@ -26,12 +26,12 @@ if not SHEET_NAME_OR_URL:
     st.warning("Please enter your Google Sheet Name or URL in the sidebar.")
     st.stop()
 
-with st.spinner("Loading portfolio tickers and RSS URL mappings..."):
+with st.spinner("Loading portfolio tickers..."):
     try:
         df_tx, ticker_map, tax_map = engine.load_and_sync_portfolio(
             SHEET_NAME_OR_URL, force_resync=True
         )
-        ir_url_map = engine.load_ir_url_map(SHEET_NAME_OR_URL)
+        info_map = engine.load_company_info_map(SHEET_NAME_OR_URL)
         active_df, _ = engine.calculate_weighted_positions(df_tx, ticker_map)
         
         active_tickers = sorted(active_df["Ticker"].unique().tolist()) if not active_df.empty else []
@@ -67,8 +67,8 @@ with col_f3:
         index=0,
     )
 
-with st.spinner("Parsing live RSS regulatory wire feeds..."):
-    news_df = engine.fetch_portfolio_news(selected_tickers, ir_url_map)
+with st.spinner("Fetching official news releases..."):
+    news_df = engine.fetch_portfolio_news(selected_tickers, info_map)
 
 st.divider()
 
@@ -91,16 +91,14 @@ if not news_df.empty and "Date_Obj" in news_df.columns:
         filtered_df = filtered_df.sort_values(by="Date_Obj", ascending=False)
 
     if not filtered_df.empty:
-        st.markdown(f"### 📋 Official Wire Announcements ({len(filtered_df)} shown)")
+        st.markdown(f"### 📋 Official Corporate Releases ({len(filtered_df)} shown)")
 
         for idx, row in filtered_df.iterrows():
             ticker = row["Ticker"]
             title = row["Title"]
             url = row["Url"]
-            domain = row["Domain"]
-            source = row.get("Source", "Regulatory Wire")
+            source = row.get("Domain", "Official IR")
             date_str = row.get("Date_Str", "Date N/A")
-            snippet = row.get("Snippet", "")
 
             date_badge = f"📅 **{date_str}**" if date_str and date_str != "Date N/A" else "📅 *Date N/A*"
 
@@ -112,14 +110,9 @@ if not news_df.empty and "Date_Obj" in news_df.columns:
                     st.markdown(date_badge)
                 with col_right:
                     st.markdown(f"#### [{title}]({url})")
-                    if snippet:
-                        st.markdown(f"> *{snippet}*")
-                    st.markdown(f"🔗 [Read Official Release on {domain}]({url})")
+                    st.markdown(f"🔗 [Open Official Article on {source}]({url})")
                 st.divider()
     else:
-        st.info("No official announcements found matching the selected date filters.")
+        st.info("No official announcements found matching the selected filters.")
 else:
-    st.info(
-        "No regulatory RSS feeds could be loaded for the selected holdings. "
-        "Please add regulatory RSS links into the `IR_RSS_Url` column of your `Ticker_Mapping` tab."
-    )
+    st.info("No official news could be loaded for the selected holdings.")
