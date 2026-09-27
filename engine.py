@@ -1,12 +1,13 @@
 import os
 import re
 from datetime import datetime
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urlparse
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 import concurrent.futures
 import gspread
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 import yfinance as yf
 import urllib3
 import streamlit as st
@@ -37,6 +38,20 @@ SUFFIX_TO_CODE = {
 
 DEFAULT_NEWS_COLUMNS = [
     "Ticker", "Title", "Url", "Domain", "Source", "Date_Obj", "Date_Str", "Snippet"
+]
+
+# Trusted Official European Regulatory Wire Domains
+APPROVED_WIRE_DOMAINS = [
+    "eqs-news.com",
+    "news.cision.com",
+    "globenewswire.com",
+    "businesswire.com",
+    "prnewswire.com",
+    "investegate.co.uk",
+    "emarketstorage.com",
+    "1info.it",
+    "mfn.se",
+    "actusnews.com",
 ]
 
 
@@ -304,8 +319,8 @@ def load_and_sync_portfolio(
     return df_tx, ticker_map, tax_map
 
 
-def load_ir_url_map(sheet_name_or_url: str, json_credentials_path: str = "credentials.json"):
-    ir_map = {}
+def load_company_info_map(sheet_name_or_url: str, json_credentials_path: str = "credentials.json"):
+    info_map = {}
     try:
         gc = get_gspread_client(json_credentials_path)
         sh = (
@@ -318,19 +333,24 @@ def load_ir_url_map(sheet_name_or_url: str, json_credentials_path: str = "creden
         for r in map_rows:
             yf_sym = str(r.get("YFinance_Ticker", "") or r.get("YFinance", "") or r.get("Ticker", "")).strip()
             ibkr_sym = str(r.get("IBKR_Symbol", "") or r.get("Symbol", "")).strip().upper()
-            ir_url = str(
-                r.get("IR_RSS_Url", "") or r.get("IR_RSS", "") or r.get("RSS_Url", "") or 
-                r.get("IR_Page_Url", "") or r.get("IR_Url", "") or r.get("IR_Page", "")
+            comp_name = str(r.get("Company_Name", "") or r.get("Company Name", "") or r.get("Name", "")).strip()
+            domain = str(
+                r.get("Company_Domain", "") or r.get("Domain", "") or 
+                r.get("IR_Page_Url", "") or r.get("IR_RSS_Url", "")
             ).strip()
-            
-            if ir_url:
-                if yf_sym:
-                    ir_map[yf_sym] = ir_url
-                if ibkr_sym:
-                    ir_map[ibkr_sym] = ir_url
+
+            if domain.startswith("http"):
+                parsed = urlparse(domain)
+                domain = parsed.netloc.replace("www.", "")
+
+            entry = {"Company_Name": comp_name, "Domain": domain}
+            if yf_sym:
+                info_map[yf_sym] = entry
+            if ibkr_sym:
+                info_map[ibkr_sym] = entry
     except Exception:
         pass
-    return ir_map
+    return info_map
 
 
 def calculate_weighted_positions(df_tx, ticker_map):
@@ -751,8 +771,19 @@ def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
     return pd.DataFrame(summary_rows)
 
 
-def parse_rss_feed(ticker: str, url: str):
+def fetch_official_wire_news(ticker: str, company_name: str, domain: str = ""):
     articles = []
+    if not company_name and not domain:
+        return articles
+
+    wire_sites = " OR ".join([f"site:{d}" for d in APPROVED_WIRE_DOMAINS])
+    
+    if domain:
+        wire_sites += f" OR site:{domain}"
+
+    query = f'"{company_name}" ({wire_sites})' if company_name else f'({wire_sites})'
+
+    rss_url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -762,82 +793,47 @@ def parse_rss_feed(ticker: str, url: str):
     }
 
     try:
-        res = requests.get(url, headers=headers, timeout=10, verify=False)
+        res = requests.get(rss_url, headers=headers, timeout=10)
         if res.status_code != 200:
             return articles
 
-        parsed_url = urlparse(url)
-        domain = parsed_url.netloc.replace("www.", "")
+        root = ET.fromstring(res.text)
+        channel = root.find("channel")
+        if channel is None:
+            return articles
 
-        soup = BeautifulSoup(res.text, "html.parser")
+        for item in channel.findall("item"):
+            title = item.findtext("title", default="").strip()
+            link = item.findtext("link", default="").strip()
+            pub_date_str = item.findtext("pubDate", default="").strip()
+            
+            source_tag = item.find("source")
+            source_name = source_tag.text if source_tag is not None else "Regulatory Wire"
 
-        items = soup.find_all("item")
-        if not items:
-            items = soup.find_all("entry")
-
-        for item in items:
-            title_tag = item.find("title")
-            title = title_tag.get_text(strip=True) if title_tag else ""
             if not title:
                 continue
 
-            link = ""
-            link_tag = item.find("link")
-            if link_tag:
-                if link_tag.get("href"):
-                    link = link_tag.get("href").strip()
-                else:
-                    link = link_tag.get_text(strip=True)
-            if not link:
-                link = url
-
-            date_str = ""
-            pub_date_tag = (
-                item.find("pubdate") or 
-                item.find("dc:date") or 
-                item.find("published") or 
-                item.find("updated") or 
-                item.find("date")
-            )
-            if pub_date_tag:
-                date_str = pub_date_tag.get_text(strip=True)
-
             pub_date = None
-            if date_str:
+            if pub_date_str:
                 try:
-                    pub_date = pd.to_datetime(date_str, errors="coerce").to_pydatetime()
+                    pub_date = parsedate_to_datetime(pub_date_str)
+                    if pub_date.tzinfo:
+                        pub_date = pub_date.astimezone(tz=None).replace(tzinfo=None)
                 except Exception:
                     pub_date = None
-
-            desc_tag = item.find("description") or item.find("summary") or item.find("content")
-            snippet = ""
-            if desc_tag:
-                raw_desc = desc_tag.get_text(strip=True)
-                clean_desc = BeautifulSoup(raw_desc, "html.parser").get_text(" ", strip=True)
-                snippet = clean_desc[:250] + ("..." if len(clean_desc) > 250 else "")
-
-            source_name = "Regulatory Wire"
-            if "cision" in domain:
-                source_name = "Cision"
-            elif "eqs" in domain or "dgap" in domain:
-                source_name = "EQS"
-            elif "investegate" in domain or "londonstockexchange" in domain:
-                source_name = "RNS"
-            elif "globenewswire" in domain:
-                source_name = "GlobeNewswire"
 
             articles.append({
                 "Ticker": ticker,
                 "Title": title,
                 "Url": link,
-                "Domain": domain,
-                "Source": source_name,
-                "Date_Obj": pub_date if pub_date and not pd.isna(pub_date) else datetime(1970, 1, 1),
-                "Date_Str": pub_date.strftime("%Y-%m-%d %H:%M") if pub_date and not pd.isna(pub_date) else "Date N/A",
-                "Snippet": snippet,
+                "Domain": source_name,
+                "Source": "Official Regulatory Wire",
+                "Date_Obj": pub_date if pub_date else datetime(1970, 1, 1),
+                "Date_Str": pub_date.strftime("%Y-%m-%d %H:%M") if pub_date else "Date N/A",
+                "Snippet": "",
             })
 
-            if len(articles) >= 20:
+            if len(articles) >= 15:
                 break
     except Exception:
         pass
@@ -845,7 +841,7 @@ def parse_rss_feed(ticker: str, url: str):
     return articles
 
 
-def fetch_portfolio_news(active_tickers, ir_url_map):
+def fetch_portfolio_news(active_tickers, info_map):
     if not active_tickers:
         return pd.DataFrame(columns=DEFAULT_NEWS_COLUMNS)
 
@@ -853,10 +849,12 @@ def fetch_portfolio_news(active_tickers, ir_url_map):
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_ticker = {}
         for ticker in active_tickers:
-            url = ir_url_map.get(ticker, "")
-            if url:
-                future = executor.submit(parse_rss_feed, ticker, url)
-                future_to_ticker[future] = ticker
+            info = info_map.get(ticker, {})
+            comp_name = info.get("Company_Name", "")
+            domain = info.get("Domain", "")
+
+            future = executor.submit(fetch_official_wire_news, ticker, comp_name, domain)
+            future_to_ticker[future] = ticker
 
         for future in concurrent.futures.as_completed(future_to_ticker):
             try:
