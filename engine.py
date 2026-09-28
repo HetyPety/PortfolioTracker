@@ -40,18 +40,10 @@ DEFAULT_NEWS_COLUMNS = [
     "Ticker", "Title", "Url", "Domain", "Source", "Date_Obj", "Date_Str", "Snippet"
 ]
 
-# Trusted Official European Regulatory Wire Domains
 APPROVED_WIRE_DOMAINS = [
-    "eqs-news.com",
-    "news.cision.com",
-    "globenewswire.com",
-    "businesswire.com",
-    "prnewswire.com",
-    "investegate.co.uk",
-    "emarketstorage.com",
-    "1info.it",
-    "mfn.se",
-    "actusnews.com",
+    "eqs-news.com", "news.cision.com", "globenewswire.com",
+    "businesswire.com", "prnewswire.com", "investegate.co.uk",
+    "emarketstorage.com", "1info.it", "mfn.se", "actusnews.com"
 ]
 
 
@@ -516,21 +508,36 @@ def enrich_with_live_prices(active_df, tax_map=None):
             t = yf.Ticker(ticker)
             t_info = t.info or {}
 
-            raw_yield = t_info.get("dividendYield") or t_info.get("trailingAnnualDividendYield")
-            if raw_yield is not None and float(raw_yield) > 0:
-                raw_float = float(raw_yield)
-                gross_div_yield = raw_float * 100.0 if raw_float < 1.0 else raw_float
-            else:
+            # Price normalized to main currency units (Pounds/Euros/Dollars)
+            price_in_main_curr = live_price / 100.0 if is_pence else live_price
+
+            # Annual dividend per share in main currency units
+            div_per_share_main = 0.0
+            raw_div_rate = t_info.get("dividendRate") or t_info.get("trailingAnnualDividendRate")
+            if raw_div_rate is not None and float(raw_div_rate) > 0:
+                div_per_share_main = float(raw_div_rate)
+
+            if div_per_share_main == 0.0:
                 try:
                     divs = t.dividends
                     if divs is not None and not divs.empty:
                         cutoff = pd.Timestamp.now(tz=divs.index.tz) - pd.DateOffset(years=1)
                         ttm_divs = divs[divs.index >= cutoff]
-                        if not ttm_divs.empty and live_price > 0:
-                            div_sum = float(ttm_divs.sum())
-                            gross_div_yield = (div_sum / live_price) * 100.0
+                        if not ttm_divs.empty:
+                            div_per_share_main = float(ttm_divs.sum())
                 except Exception:
                     pass
+
+            if div_per_share_main > 0 and price_in_main_curr > 0:
+                gross_div_yield = (div_per_share_main / price_in_main_curr) * 100.0
+            else:
+                raw_yield = t_info.get("dividendYield") or t_info.get("trailingAnnualDividendYield")
+                if raw_yield is not None and float(raw_yield) > 0:
+                    raw_float = float(raw_yield)
+                    # Correct Yahoo Finance's internal 100x UK pence error in dividendYield
+                    if (ticker.endswith(".L") or currency_code == "GBP") and raw_float < 0.005:
+                        raw_float = raw_float * 100.0
+                    gross_div_yield = raw_float * 100.0 if raw_float < 1.0 else raw_float
 
             cal = t.calendar
             if cal is not None and isinstance(cal, dict) and "Earnings Date" in cal:
@@ -771,17 +778,16 @@ def get_breakdown_summary(df_tx, enriched_df, eur_huf_rate):
     return pd.DataFrame(summary_rows)
 
 
-def fetch_official_wire_news(ticker: str, company_name: str, domain: str = ""):
+def fetch_official_company_news(ticker: str, company_name: str, domain: str = ""):
     articles = []
-    if not company_name and not domain:
-        return articles
 
-    wire_sites = " OR ".join([f"site:{d}" for d in APPROVED_WIRE_DOMAINS])
-    
     if domain:
-        wire_sites += f" OR site:{domain}"
-
-    query = f'"{company_name}" ({wire_sites})' if company_name else f'({wire_sites})'
+        query = f"site:{domain}"
+    elif company_name:
+        wire_sites = " OR ".join([f"site:{d}" for d in APPROVED_WIRE_DOMAINS])
+        query = f'"{company_name}" ({wire_sites})'
+    else:
+        return articles
 
     rss_url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
     headers = {
@@ -808,7 +814,7 @@ def fetch_official_wire_news(ticker: str, company_name: str, domain: str = ""):
             pub_date_str = item.findtext("pubDate", default="").strip()
             
             source_tag = item.find("source")
-            source_name = source_tag.text if source_tag is not None else "Regulatory Wire"
+            source_name = source_tag.text if source_tag is not None else (domain or "Official IR")
 
             if not title:
                 continue
@@ -827,7 +833,7 @@ def fetch_official_wire_news(ticker: str, company_name: str, domain: str = ""):
                 "Title": title,
                 "Url": link,
                 "Domain": source_name,
-                "Source": "Official Regulatory Wire",
+                "Source": "Official IR Page",
                 "Date_Obj": pub_date if pub_date else datetime(1970, 1, 1),
                 "Date_Str": pub_date.strftime("%Y-%m-%d %H:%M") if pub_date else "Date N/A",
                 "Snippet": "",
@@ -853,7 +859,7 @@ def fetch_portfolio_news(active_tickers, info_map):
             comp_name = info.get("Company_Name", "")
             domain = info.get("Domain", "")
 
-            future = executor.submit(fetch_official_wire_news, ticker, comp_name, domain)
+            future = executor.submit(fetch_official_company_news, ticker, comp_name, domain)
             future_to_ticker[future] = ticker
 
         for future in concurrent.futures.as_completed(future_to_ticker):
