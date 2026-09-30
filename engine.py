@@ -27,13 +27,14 @@ COUNTRY_NAME_TO_CODE = {
     "NEW ZEALAND": "NZ", "PORTUGAL": "PT", "SWEDEN": "SE", "NORWAY": "NO",
     "POLAND": "PL", "CZECHIA": "CZ", "CZECH REPUBLIC": "CZ",
     "AUSTRALIA": "AU", "CANADA": "CA", "JAPAN": "JP", "BELGIUM": "BE",
-    "IRELAND": "IE", "LUXEMBOURG": "LU", "HUNGARY": "HU",
+    "IRELAND": "IE", "LUXEMBOURG": "LU", "HUNGARY": "HU", "ISRAEL": "IL",
 }
 
 SUFFIX_TO_CODE = {
     ".VI": "AT", ".DE": "DE", ".F": "DE", ".HE": "FI", ".MC": "ES",
     ".SW": "CH", ".MI": "IT", ".PA": "FR", ".CO": "DK", ".AS": "NL",
     ".NZ": "NZ", ".LS": "PT", ".ST": "SE", ".OL": "NO", ".L": "GB",
+    ".TA": "IL",
 }
 
 DEFAULT_NEWS_COLUMNS = [
@@ -508,10 +509,8 @@ def enrich_with_live_prices(active_df, tax_map=None):
             t = yf.Ticker(ticker)
             t_info = t.info or {}
 
-            # Price normalized to main currency units (Pounds/Euros/Dollars)
             price_in_main_curr = live_price / 100.0 if is_pence else live_price
 
-            # Annual dividend per share in main currency units
             div_per_share_main = 0.0
             raw_div_rate = t_info.get("dividendRate") or t_info.get("trailingAnnualDividendRate")
             if raw_div_rate is not None and float(raw_div_rate) > 0:
@@ -528,14 +527,19 @@ def enrich_with_live_prices(active_df, tax_map=None):
                 except Exception:
                     pass
 
+            # 100x Multiplier override for PLSN.TA / Tel Aviv listings
+            if ticker == "PLSN.TA" or ticker.endswith(".TA"):
+                div_per_share_main = div_per_share_main * 100.0
+
             if div_per_share_main > 0 and price_in_main_curr > 0:
                 gross_div_yield = (div_per_share_main / price_in_main_curr) * 100.0
             else:
                 raw_yield = t_info.get("dividendYield") or t_info.get("trailingAnnualDividendYield")
                 if raw_yield is not None and float(raw_yield) > 0:
                     raw_float = float(raw_yield)
-                    # Correct Yahoo Finance's internal 100x UK pence error in dividendYield
                     if (ticker.endswith(".L") or currency_code == "GBP") and raw_float < 0.005:
+                        raw_float = raw_float * 100.0
+                    if ticker == "PLSN.TA" or ticker.endswith(".TA"):
                         raw_float = raw_float * 100.0
                     gross_div_yield = raw_float * 100.0 if raw_float < 1.0 else raw_float
 
