@@ -21,31 +21,13 @@ SUPPORTED_CURRENCIES = {
 }
 
 COUNTRY_NAME_TO_CODE = {
-    "UNITED STATES": "US", "USA": "US", "AMERIKA": "US",
-    "UNITED KINGDOM": "GB", "UK": "GB", "EGYESULT KIRALYSAG": "GB",
-    "GERMANY": "DE", "NEMETORSZAG": "DE",
-    "AUSTRIA": "AT", "AUSZTRIA": "AT",
-    "FINLAND": "FI", "FINNORSZAG": "FI",
-    "SPAIN": "ES", "SPANYOLORSZAG": "ES",
-    "SWITZERLAND": "CH", "SVACJ": "CH",
-    "ITALY": "IT", "OLASZORSZAG": "IT",
-    "FRANCE": "FR", "FRANCIAORSZAG": "FR",
-    "DENMARK": "DK", "DANORSZAG": "DK",
-    "NETHERLANDS": "NL", "HOLLANDIA": "NL",
-    "NEW ZEALAND": "NZ",
-    "PORTUGAL": "PT", "PORTUGALIA": "PT",
-    "SWEDEN": "SE", "SVEDORSZAG": "SE",
-    "NORWAY": "NO", "NORVEGIA": "NO",
-    "POLAND": "PL", "LENGYELORSZAG": "PL",
-    "CZECHIA": "CZ", "CZECH REPUBLIC": "CZ", "CSEHORSZAG": "CZ",
-    "AUSTRALIA": "AU", "AUSZTRALIA": "AU",
-    "CANADA": "CA", "KANADA": "CA",
-    "JAPAN": "JP",
-    "BELGIUM": "BE",
-    "IRELAND": "IE", "IRORSZAG": "IE",
-    "LUXEMBOURG": "LU",
-    "HUNGARY": "HU", "MAGYARORSZAG": "HU",
-    "ISRAEL": "IL", "ISR": "IL", "IZRAEL": "IL",
+    "UNITED STATES": "US", "UNITED KINGDOM": "GB", "GERMANY": "DE",
+    "AUSTRIA": "AT", "FINLAND": "FI", "SPAIN": "ES", "SWITZERLAND": "CH",
+    "ITALY": "IT", "FRANCE": "FR", "DENMARK": "DK", "NETHERLANDS": "NL",
+    "NEW ZEALAND": "NZ", "PORTUGAL": "PT", "SWEDEN": "SE", "NORWAY": "NO",
+    "POLAND": "PL", "CZECHIA": "CZ", "CZECH REPUBLIC": "CZ",
+    "AUSTRALIA": "AU", "CANADA": "CA", "JAPAN": "JP", "BELGIUM": "BE",
+    "IRELAND": "IE", "LUXEMBOURG": "LU", "HUNGARY": "HU", "ISRAEL": "IL",
 }
 
 SUFFIX_TO_CODE = {
@@ -157,8 +139,6 @@ def find_col_name(df_columns, possible_names, fallback_idx: int = -1) -> str:
 def detect_country_code(ticker: str, ticker_info=None) -> str:
     if ticker_info and isinstance(ticker_info, dict):
         country_name = str(ticker_info.get("country", "")).strip().upper()
-        if len(country_name) == 2:
-            return country_name
         if country_name in COUNTRY_NAME_TO_CODE:
             return COUNTRY_NAME_TO_CODE[country_name]
 
@@ -275,7 +255,7 @@ def load_and_sync_portfolio(
         ws_tax = sh.worksheet("Tax")
         tax_rows = ws_tax.get_all_records()
         for r in tax_rows:
-            country_raw = str(
+            country_code = str(
                 r.get("Country", "") or r.get("Orszag", "") or r.get("Country Code", "")
             ).strip().upper()
             tax_val_raw = (
@@ -284,41 +264,15 @@ def load_and_sync_portfolio(
                 or r.get("Tax %", "")
                 or r.get("Withholding Tax %", "")
             )
-            if country_raw:
+            if country_code:
                 tax_rate = clean_float(tax_val_raw)
                 if tax_rate > 1.0:
                     tax_rate = tax_rate / 100.0
-                
-                tax_map[country_raw] = tax_rate
-                
-                iso_code = country_raw
-                if len(country_raw) == 2:
-                    iso_code = country_raw
-                elif country_raw in COUNTRY_NAME_TO_CODE:
-                    iso_code = COUNTRY_NAME_TO_CODE[country_raw]
-                
-                tax_map[iso_code] = tax_rate
-
-                if iso_code == "GB" or country_raw in ["UK", "UNITED KINGDOM"]:
-                    tax_map["UK"] = tax_rate
+                tax_map[country_code] = tax_rate
+                if country_code == "UK":
                     tax_map["GB"] = tax_rate
-                elif iso_code == "IL" or country_raw in ["ISRAEL", "ISR", "IZRAEL"]:
-                    tax_map["IL"] = tax_rate
-                    tax_map["ISR"] = tax_rate
-                    tax_map["ISRAEL"] = tax_rate
-                    tax_map["IZRAEL"] = tax_rate
-                elif iso_code == "AT":
-                    tax_map["AT"] = tax_rate
-                    tax_map["AUSTRIA"] = tax_rate
-                elif iso_code == "DE":
-                    tax_map["DE"] = tax_rate
-                    tax_map["GERMANY"] = tax_rate
-                elif iso_code == "FI":
-                    tax_map["FI"] = tax_rate
-                    tax_map["FINLAND"] = tax_rate
-                elif iso_code == "ES":
-                    tax_map["ES"] = tax_rate
-                    tax_map["SPAIN"] = tax_rate
+                elif country_code == "GB":
+                    tax_map["UK"] = tax_rate
     except Exception:
         pass
 
@@ -573,6 +527,7 @@ def enrich_with_live_prices(active_df, tax_map=None):
                 except Exception:
                     pass
 
+            # 100x Multiplier override for PLSN.TA / Tel Aviv listings
             if ticker == "PLSN.TA" or ticker.endswith(".TA"):
                 div_per_share_main = div_per_share_main * 100.0
 
@@ -610,15 +565,7 @@ def enrich_with_live_prices(active_df, tax_map=None):
             pass
 
         country_code = detect_country_code(ticker, t_info)
-        raw_info_country = str(t_info.get("country", "")).strip().upper() if t_info else ""
-
-        w_tax_rate = (
-            tax_map.get(country_code) or 
-            tax_map.get(raw_info_country) or 
-            tax_map.get("IL" if (country_code == "IL" or ticker.endswith(".TA")) else country_code) or 
-            0.0
-        )
-
+        w_tax_rate = tax_map.get(country_code, tax_map.get("UK" if country_code == "GB" else country_code, 0.0))
         net_div_yield = gross_div_yield * (1.0 - w_tax_rate)
         tax_pct = w_tax_rate * 100.0
 
